@@ -430,7 +430,11 @@ function findPathClient(map, startWorld, endWorld, radius) {
     at = cameFrom[at];
   }
   rawPath.reverse();
-  const fullPath = [{ x: startWorld.x, y: startWorld.y }, ...rawPath, { x: endWorld.x, y: endWorld.y }];
+  const endIsSafe = insideWorldClient(endWorld, radius, map) && !pointBlockedByBuildingClient(endWorld, radius, nav.buildings);
+  const safeEnd = endIsSafe
+    ? { x: endWorld.x, y: endWorld.y }
+    : rawPath[rawPath.length - 1];
+  const fullPath = [{ x: startWorld.x, y: startWorld.y }, ...rawPath, safeEnd];
 
   const smoothed = [fullPath[0]];
   let anchor = 0;
@@ -440,7 +444,9 @@ function findPathClient(map, startWorld, endWorld, radius) {
       anchor = i - 1;
     }
   }
-  smoothed.push(fullPath[fullPath.length - 1]);
+  if (segmentClearForCircleClient(smoothed[smoothed.length - 1], fullPath[fullPath.length - 1], radius, map, nav.buildings)) {
+    smoothed.push(fullPath[fullPath.length - 1]);
+  }
   return smoothed;
 }
 
@@ -1247,15 +1253,16 @@ async function commitCurrentDraft(mode) {
   }
   const you = byId(state.snapshot.you.id) || state.snapshot.you;
   if (mode === "move") {
+    state.inputStep = "aim";
     const moveTarget = state.draftMoveTarget || { x: you.x, y: you.y };
     await savePlan({
       moveTarget,
       aimDir: state.draftAimDir || state.snapshot.planning?.plan?.aimDir || state.snapshot.you.lastAimDir
     });
     pushMessage("Move target set. Drag again to aim.");
-    state.inputStep = "aim";
     return;
   }
+  state.inputStep = "move";
   const moveTarget =
     state.draftMoveTarget ||
     state.snapshot.planning?.plan?.moveTarget ||
@@ -1265,7 +1272,6 @@ async function commitCurrentDraft(mode) {
     aimDir: state.draftAimDir || state.snapshot.you.lastAimDir
   });
   pushMessage("Plan updated.");
-  state.inputStep = "move";
 }
 
 function beginPlanDrag(point, pointerType) {

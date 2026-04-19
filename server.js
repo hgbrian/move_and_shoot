@@ -605,7 +605,11 @@ function findPath(map, startWorld, endWorld, radius) {
   }
   rawPath.reverse();
 
-  const fullPath = [{ x: startWorld.x, y: startWorld.y }, ...rawPath, { x: endWorld.x, y: endWorld.y }];
+  const endIsSafe = insideWorld(endWorld, radius, map) && !pointBlockedByBuilding(endWorld, radius, map);
+  const safeEnd = endIsSafe
+    ? { x: endWorld.x, y: endWorld.y }
+    : rawPath[rawPath.length - 1];
+  const fullPath = [{ x: startWorld.x, y: startWorld.y }, ...rawPath, safeEnd];
 
   const smoothed = [fullPath[0]];
   let anchorIdx = 0;
@@ -615,7 +619,9 @@ function findPath(map, startWorld, endWorld, radius) {
       anchorIdx = i - 1;
     }
   }
-  smoothed.push(fullPath[fullPath.length - 1]);
+  if (segmentClearForCircle(smoothed[smoothed.length - 1], fullPath[fullPath.length - 1], radius, map)) {
+    smoothed.push(fullPath[fullPath.length - 1]);
+  }
   return smoothed;
 }
 
