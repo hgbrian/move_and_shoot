@@ -11,8 +11,8 @@ const CONFIG = {
   minPlayers: 2,
   maxPlayers: 8,
   totalRounds: 3,
-  lobbyCountdownMs: 3_000,
-  preRoundCountdownMs: 3_000,
+  lobbyCountdownMs: 1_000,
+  preRoundCountdownMs: 1_000,
   planningMs: 4_000,
   movementMs: 2_000,
   roundEndPauseMs: 3_000,
@@ -418,14 +418,34 @@ function buildNavGrid(map, radius) {
   const cols = Math.ceil(map.width / cellSize);
   const rows = Math.ceil(map.height / cellSize);
   const walkable = new Uint8Array(cols * rows);
+  const buildings = map.buildings.map((b) => ({
+    x: b.x,
+    y: b.y,
+    halfWidth: b.halfWidth,
+    halfHeight: b.halfHeight,
+    angleRad: b.angleRad,
+    boundingRadius: Math.hypot(b.halfWidth, b.halfHeight) + radius
+  }));
   for (let cy = 0; cy < rows; cy += 1) {
+    const y = cy * cellSize + cellSize / 2;
     for (let cx = 0; cx < cols; cx += 1) {
-      const center = {
-        x: cx * cellSize + cellSize / 2,
-        y: cy * cellSize + cellSize / 2
-      };
-      const ok = insideWorld(center, radius, map) && !pointBlockedByBuilding(center, radius, map);
-      walkable[cy * cols + cx] = ok ? 1 : 0;
+      const x = cx * cellSize + cellSize / 2;
+      const idx = cy * cols + cx;
+      if (x < radius || x > map.width - radius || y < radius || y > map.height - radius) continue;
+      let blocked = false;
+      for (const b of buildings) {
+        const ddx = x - b.x;
+        const ddy = y - b.y;
+        if (ddx * ddx + ddy * ddy > b.boundingRadius * b.boundingRadius) continue;
+        const cos = Math.cos(-b.angleRad);
+        const sin = Math.sin(-b.angleRad);
+        const lx = ddx * cos - ddy * sin;
+        const ly = ddx * sin + ddy * cos;
+        const cx2 = lx - clamp(lx, -b.halfWidth, b.halfWidth);
+        const cy2 = ly - clamp(ly, -b.halfHeight, b.halfHeight);
+        if (cx2 * cx2 + cy2 * cy2 < radius * radius) { blocked = true; break; }
+      }
+      if (!blocked) walkable[idx] = 1;
     }
   }
   return { cellSize, cols, rows, walkable };
@@ -584,18 +604,17 @@ function findPath(map, startWorld, endWorld, radius) {
   }
   rawPath.reverse();
 
-  rawPath[0] = { x: startWorld.x, y: startWorld.y };
-  rawPath[rawPath.length - 1] = { x: endWorld.x, y: endWorld.y };
+  const fullPath = [{ x: startWorld.x, y: startWorld.y }, ...rawPath, { x: endWorld.x, y: endWorld.y }];
 
-  const smoothed = [rawPath[0]];
+  const smoothed = [fullPath[0]];
   let anchorIdx = 0;
-  for (let i = 2; i < rawPath.length; i += 1) {
-    if (!segmentClearForCircle(rawPath[anchorIdx], rawPath[i], radius, map)) {
-      smoothed.push(rawPath[i - 1]);
+  for (let i = 2; i < fullPath.length; i += 1) {
+    if (!segmentClearForCircle(fullPath[anchorIdx], fullPath[i], radius, map)) {
+      smoothed.push(fullPath[i - 1]);
       anchorIdx = i - 1;
     }
   }
-  smoothed.push(rawPath[rawPath.length - 1]);
+  smoothed.push(fullPath[fullPath.length - 1]);
   return smoothed;
 }
 
@@ -1202,6 +1221,7 @@ function startRound(room) {
   room.match.currentRoundNumber += 1;
   const participantIds = room.match.participantIds;
   const map = generateMap(room.settings.mapGridSize);
+  getNavGrid(map);
   const spawns = findSpawnPoints(map, participantIds.length);
   room.round = {
     number: room.match.currentRoundNumber,
@@ -1715,7 +1735,8 @@ function updateRoom(room) {
     const aliveCount = room.match.participantIds
       .map((playerId) => room.players.get(playerId))
       .filter((player) => player && player.roundAlive).length;
-    if (aliveCount <= 1) {
+    const soloTest = room.testMode && room.match.participantIds.length === 1;
+    if (aliveCount <= 1 && !soloTest) {
       finalizeRound(room);
     } else {
       startPlanning(room);

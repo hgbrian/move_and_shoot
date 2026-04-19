@@ -261,12 +261,34 @@ function buildNavGridClient(map, radius) {
   const cols = Math.ceil(map.width / cellSize);
   const rows = Math.ceil(map.height / cellSize);
   const walkable = new Uint8Array(cols * rows);
-  const buildings = map.buildings.map(buildingMetrics);
+  const buildings = map.buildings.map((building) => {
+    const metrics = buildingMetrics(building);
+    const diagonal = Math.hypot(metrics.halfWidth, metrics.halfHeight);
+    metrics.boundingRadius = diagonal + radius;
+    return metrics;
+  });
   for (let cy = 0; cy < rows; cy += 1) {
+    const y = cy * cellSize + cellSize / 2;
     for (let cx = 0; cx < cols; cx += 1) {
-      const center = { x: cx * cellSize + cellSize / 2, y: cy * cellSize + cellSize / 2 };
-      const ok = insideWorldClient(center, radius, map) && !pointBlockedByBuildingClient(center, radius, buildings);
-      walkable[cy * cols + cx] = ok ? 1 : 0;
+      const x = cx * cellSize + cellSize / 2;
+      const idx = cy * cols + cx;
+      if (x < radius || x > map.width - radius || y < radius || y > map.height - radius) {
+        continue;
+      }
+      let blocked = false;
+      for (const b of buildings) {
+        const ddx = x - b.x;
+        const ddy = y - b.y;
+        if (ddx * ddx + ddy * ddy > b.boundingRadius * b.boundingRadius) continue;
+        const cos = Math.cos(-b.angleRad);
+        const sin = Math.sin(-b.angleRad);
+        const lx = ddx * cos - ddy * sin;
+        const ly = ddx * sin + ddy * cos;
+        const cx2 = lx - clamp(lx, -b.halfWidth, b.halfWidth);
+        const cy2 = ly - clamp(ly, -b.halfHeight, b.halfHeight);
+        if (cx2 * cx2 + cy2 * cy2 < radius * radius) { blocked = true; break; }
+      }
+      if (!blocked) walkable[idx] = 1;
     }
   }
   return { cellSize, cols, rows, walkable, buildings };
@@ -406,18 +428,17 @@ function findPathClient(map, startWorld, endWorld, radius) {
     at = cameFrom[at];
   }
   rawPath.reverse();
-  rawPath[0] = { x: startWorld.x, y: startWorld.y };
-  rawPath[rawPath.length - 1] = { x: endWorld.x, y: endWorld.y };
+  const fullPath = [{ x: startWorld.x, y: startWorld.y }, ...rawPath, { x: endWorld.x, y: endWorld.y }];
 
-  const smoothed = [rawPath[0]];
+  const smoothed = [fullPath[0]];
   let anchor = 0;
-  for (let i = 2; i < rawPath.length; i += 1) {
-    if (!segmentClearForCircleClient(rawPath[anchor], rawPath[i], radius, map, nav.buildings)) {
-      smoothed.push(rawPath[i - 1]);
+  for (let i = 2; i < fullPath.length; i += 1) {
+    if (!segmentClearForCircleClient(fullPath[anchor], fullPath[i], radius, map, nav.buildings)) {
+      smoothed.push(fullPath[i - 1]);
       anchor = i - 1;
     }
   }
-  smoothed.push(rawPath[rawPath.length - 1]);
+  smoothed.push(fullPath[fullPath.length - 1]);
   return smoothed;
 }
 
@@ -708,6 +729,15 @@ function handleSnapshot(snapshot) {
   const previous = state.snapshot;
   state.snapshot = snapshot;
   state.roomCode = snapshot.room.code;
+  if (snapshot.match?.map && snapshot.config) {
+    const key = `${snapshot.match.map.width}x${snapshot.match.map.height}:${snapshot.match.map.buildings.length}`;
+    if (navCache.mapKey !== key) {
+      navCache.mapKey = key;
+      navCache.nav = buildNavGridClient(snapshot.match.map, snapshot.config.playerRadius);
+      pathCache.key = "";
+      pathCache.path = null;
+    }
+  }
   const planningKey = snapshot.match.active
     ? `${snapshot.match.currentRound}-${snapshot.match.turnNumber}-${snapshot.room.phase}`
     : snapshot.room.phase;
