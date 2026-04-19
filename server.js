@@ -242,12 +242,12 @@ function segmentIntersectsExpandedBuilding(start, end, building, expandBy) {
 }
 
 function pointBlockedByBuilding(point, radius, map) {
+  const radiusSq = radius * radius;
   for (const building of map.buildings) {
     const local = rotateIntoLocal(point, building);
-    if (
-      Math.abs(local.x) <= building.halfWidth + radius &&
-      Math.abs(local.y) <= building.halfHeight + radius
-    ) {
+    const dx = local.x - clamp(local.x, -building.halfWidth, building.halfWidth);
+    const dy = local.y - clamp(local.y, -building.halfHeight, building.halfHeight);
+    if (dx * dx + dy * dy < radiusSq) {
       return true;
     }
   }
@@ -281,19 +281,27 @@ function rotateLocalVectorToWorld(vector, building) {
 
 function buildingCollisionNormal(point, radius, building) {
   const local = rotateIntoLocal(point, building);
-  const limitX = building.halfWidth + radius;
-  const limitY = building.halfHeight + radius;
-  if (Math.abs(local.x) > limitX || Math.abs(local.y) > limitY) {
+  const clampedX = clamp(local.x, -building.halfWidth, building.halfWidth);
+  const clampedY = clamp(local.y, -building.halfHeight, building.halfHeight);
+  const dx = local.x - clampedX;
+  const dy = local.y - clampedY;
+  const distSq = dx * dx + dy * dy;
+  if (distSq >= radius * radius) {
     return null;
   }
 
-  const penetrationX = limitX - Math.abs(local.x);
-  const penetrationY = limitY - Math.abs(local.y);
   let normalLocal;
-  if (penetrationX < penetrationY) {
-    normalLocal = { x: local.x >= 0 ? 1 : -1, y: 0 };
+  if (distSq > 1e-8) {
+    const dist = Math.sqrt(distSq);
+    normalLocal = { x: dx / dist, y: dy / dist };
   } else {
-    normalLocal = { x: 0, y: local.y >= 0 ? 1 : -1 };
+    const penetrationX = building.halfWidth - Math.abs(local.x);
+    const penetrationY = building.halfHeight - Math.abs(local.y);
+    if (penetrationX < penetrationY) {
+      normalLocal = { x: local.x >= 0 ? 1 : -1, y: 0 };
+    } else {
+      normalLocal = { x: 0, y: local.y >= 0 ? 1 : -1 };
+    }
   }
   return normalizeVector(rotateLocalVectorToWorld(normalLocal, building), normalLocal);
 }
@@ -1103,8 +1111,19 @@ function simulateMovement(room, actionMap) {
         proposed[player.id] = { ...state.current };
         continue;
       }
-      const idealNext = lerpPoint(results[player.id].start, state.target, stepT1);
-      const desiredDelta = subtract(idealNext, state.current);
+      const totalDistance = distance(results[player.id].start, state.target);
+      const perStep = totalDistance / steps;
+      const remaining = subtract(state.target, state.current);
+      const remainingDist = Math.hypot(remaining.x, remaining.y);
+      if (remainingDist < 1e-4 || perStep < 1e-4) {
+        proposed[player.id] = { ...state.current };
+        continue;
+      }
+      const stepDist = Math.min(remainingDist, perStep);
+      const desiredDelta = {
+        x: (remaining.x / remainingDist) * stepDist,
+        y: (remaining.y / remainingDist) * stepDist
+      };
       proposed[player.id] = moveCircleWithSliding(state.current, desiredDelta, radius, map);
     }
 

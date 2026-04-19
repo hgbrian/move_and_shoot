@@ -17,6 +17,7 @@ const ui = {
   turnLabel: document.getElementById("turn-label"),
   readyLabel: document.getElementById("ready-label"),
   scoreLabel: document.getElementById("score-label"),
+  playersLabel: document.getElementById("players-label"),
   startGameButton: document.getElementById("start-game-button"),
   topActionSlot: document.getElementById("top-action-slot")
 };
@@ -30,10 +31,9 @@ const state = {
   lastPerfNowMs: 0,
   pollTimer: null,
   animationFrame: 0,
-  inputStep: "move",
   draftMoveTarget: null,
   draftAimDir: { x: 0, y: -1 },
-  messageLog: ["Click a move point, then click an aim point."],
+  messageLog: ["Press and drag to set move target and aim direction."],
   lastPhase: "",
   lastRoundSummaryKey: "",
   lastMatchSummaryKey: "",
@@ -48,8 +48,8 @@ const state = {
   },
   dragPlan: {
     active: false,
-    mode: "",
-    pointerType: ""
+    pointerType: "",
+    startWorld: null
   },
   camera: {
     x: 0,
@@ -274,7 +274,8 @@ function getCameraTarget() {
     if (localBullet) {
       const shooting = state.snapshot.match.shooting;
       const elapsed = currentPlaybackServerNow() - shooting.startedAt;
-      const clampedElapsed = clamp(elapsed, 0, localBullet.stopTimeMs);
+      const cameraLeadMs = 80;
+      const clampedElapsed = clamp(elapsed + cameraLeadMs, 0, localBullet.stopTimeMs);
       const travelDistance =
         (clampedElapsed / 1000) * state.snapshot.config.bulletSpeed;
       return {
@@ -504,7 +505,6 @@ function handleSnapshot(snapshot) {
 
   if (planningKey !== state.lastPlanningKey) {
     state.lastPlanningKey = planningKey;
-    state.inputStep = "move";
     state.draftMoveTarget = snapshot.planning?.plan?.moveTarget || null;
     state.draftAimDir = snapshot.planning?.plan?.aimDir || snapshot.you.lastAimDir || { x: 0, y: -1 };
   }
@@ -560,6 +560,9 @@ function renderHud() {
       : "Spectating";
   const leaderWins = Math.max(0, ...state.snapshot.players.map((player) => player.wins || 0));
   ui.scoreLabel.textContent = `${state.snapshot.you.wins || 0}W / ${leaderWins}W`;
+  const connectedPlayers = state.snapshot.players.filter((player) => player.connected);
+  const rosterNames = connectedPlayers.map((player) => player.name).join(", ") || "—";
+  ui.playersLabel.textContent = `${connectedPlayers.length}/${state.snapshot.room.maxPlayers}: ${rosterNames}`;
   ui.topActionSlot.classList.toggle(
     "hidden",
     !(state.snapshot.you.isHost && state.snapshot.room.phase === "lobby")
@@ -806,7 +809,7 @@ function drawOverlayText() {
   ctx.textAlign = "center";
   if (state.snapshot.room.phase === "planning") {
     ctx.fillText(
-      state.inputStep === "move" ? "Choose move destination" : "Choose shoot direction",
+      "Press to set move target, drag to aim",
       viewport.centerX,
       viewport.bottom + 26
     );
@@ -896,86 +899,61 @@ function pointInsidePlayArea(point) {
   );
 }
 
-function updatePlanDraftFromScreenPoint(point, mode) {
-  if (!state.snapshot?.match?.active || !state.snapshot.you.alive || !pointInsidePlayArea(point)) {
+const AIM_DRAG_THRESHOLD = 16;
+
+function beginPlanDrag(point, pointerType) {
+  if (!state.snapshot?.match?.active || !state.snapshot.you.alive) {
+    return false;
+  }
+  if (state.snapshot.room.phase !== "planning" || !pointInsidePlayArea(point)) {
     return false;
   }
   const world = screenToWorld(point);
-  if (mode === "move") {
-    state.draftMoveTarget = clampMoveTarget(world);
-    return true;
-  }
-
-  const you = byId(state.snapshot.you.id) || state.snapshot.you;
-  const origin = state.draftMoveTarget || state.snapshot.planning?.plan?.moveTarget || { x: you.x, y: you.y };
-  state.draftAimDir = normalize({
-    x: world.x - origin.x,
-    y: world.y - origin.y
-  }, state.snapshot.you.lastAimDir);
-  return true;
-}
-
-async function commitCurrentDraft(mode) {
-  if (!state.snapshot?.you.alive || state.snapshot.room.phase !== "planning") {
-    return;
-  }
-
-  const you = byId(state.snapshot.you.id) || state.snapshot.you;
-  if (mode === "move") {
-    const moveTarget = state.draftMoveTarget || { x: you.x, y: you.y };
-    await savePlan({
-      moveTarget,
-      aimDir: state.draftAimDir || state.snapshot.planning?.plan?.aimDir || state.snapshot.you.lastAimDir
-    });
-    pushMessage("Move target set. Drag again to aim.");
-    state.inputStep = "aim";
-    return;
-  }
-
-  const moveTarget =
-    state.draftMoveTarget ||
-    state.snapshot.planning?.plan?.moveTarget ||
-    { x: you.x, y: you.y };
-  await savePlan({
-    moveTarget,
-    aimDir: state.draftAimDir || state.snapshot.you.lastAimDir
-  });
-  pushMessage("Plan updated.");
-  state.inputStep = "move";
-}
-
-function beginPlanDrag(point, pointerType) {
-  if (!state.snapshot?.you.alive || state.snapshot.room.phase !== "planning") {
-    return false;
-  }
-  const mode = state.inputStep;
-  const updated = updatePlanDraftFromScreenPoint(point, mode);
-  if (!updated) {
-    return false;
-  }
   state.dragPlan.active = true;
-  state.dragPlan.mode = mode;
   state.dragPlan.pointerType = pointerType;
+  state.dragPlan.startWorld = world;
+  state.draftMoveTarget = clampMoveTarget(world);
+  if (!state.draftAimDir) {
+    state.draftAimDir =
+      state.snapshot.planning?.plan?.aimDir ||
+      state.snapshot.you.lastAimDir ||
+      { x: 0, y: -1 };
+  }
   return true;
 }
 
 function updatePlanDrag(point) {
-  if (!state.dragPlan.active) {
+  if (!state.dragPlan.active || !state.dragPlan.startWorld) {
     return;
   }
-  updatePlanDraftFromScreenPoint(point, state.dragPlan.mode);
+  const world = screenToWorld(point);
+  const dx = world.x - state.dragPlan.startWorld.x;
+  const dy = world.y - state.dragPlan.startWorld.y;
+  if (Math.hypot(dx, dy) > AIM_DRAG_THRESHOLD) {
+    state.draftAimDir = normalize({ x: dx, y: dy }, state.draftAimDir);
+  }
 }
 
 async function endPlanDrag() {
   if (!state.dragPlan.active) {
     return;
   }
-  const mode = state.dragPlan.mode;
   state.dragPlan.active = false;
-  state.dragPlan.mode = "";
   state.dragPlan.pointerType = "";
+  state.dragPlan.startWorld = null;
+  if (!state.snapshot?.you.alive || state.snapshot.room.phase !== "planning") {
+    return;
+  }
+  const you = byId(state.snapshot.you.id) || state.snapshot.you;
+  const moveTarget = state.draftMoveTarget || { x: you.x, y: you.y };
+  const aimDir =
+    state.draftAimDir ||
+    state.snapshot.planning?.plan?.aimDir ||
+    state.snapshot.you.lastAimDir ||
+    { x: 0, y: -1 };
   try {
-    await commitCurrentDraft(mode);
+    await savePlan({ moveTarget, aimDir });
+    pushMessage("Plan updated.");
   } catch (error) {
     pushMessage(error.message);
   }
@@ -1023,45 +1001,6 @@ function clampMoveTarget(worldPoint) {
     x: you.x + dir.x * state.snapshot.config.moveRange,
     y: you.y + dir.y * state.snapshot.config.moveRange
   };
-}
-
-async function handlePlanningClick(worldPoint) {
-  if (!state.snapshot?.you.alive || state.snapshot.room.phase !== "planning") {
-    return;
-  }
-
-  if (state.inputStep === "move") {
-    state.draftMoveTarget = clampMoveTarget(worldPoint);
-    state.draftAimDir = state.snapshot.planning?.plan?.aimDir || state.snapshot.you.lastAimDir || { x: 0, y: -1 };
-    pushMessage("Move target set. Click again to aim.");
-    state.inputStep = "aim";
-    try {
-      await savePlan({
-        moveTarget: state.draftMoveTarget,
-        aimDir: state.draftAimDir
-      });
-    } catch (error) {
-      pushMessage(error.message);
-    }
-    return;
-  }
-
-  const origin = state.draftMoveTarget || (byId(state.snapshot.you.id) || state.snapshot.you);
-  state.draftAimDir = normalize({
-    x: worldPoint.x - origin.x,
-    y: worldPoint.y - origin.y
-  }, state.snapshot.you.lastAimDir);
-
-  try {
-    await savePlan({
-      moveTarget: state.draftMoveTarget || { x: origin.x, y: origin.y },
-      aimDir: state.draftAimDir
-    });
-    pushMessage("Plan updated.");
-  } catch (error) {
-    pushMessage(error.message);
-  }
-  state.inputStep = "move";
 }
 
 canvas.addEventListener("pointerdown", async (event) => {
@@ -1167,8 +1106,8 @@ window.addEventListener("pointermove", (event) => {
 window.addEventListener("pointercancel", () => {
   state.dragCamera.active = false;
   state.dragPlan.active = false;
-  state.dragPlan.mode = "";
   state.dragPlan.pointerType = "";
+  state.dragPlan.startWorld = null;
 });
 
 window.addEventListener("pointerup", async () => {
