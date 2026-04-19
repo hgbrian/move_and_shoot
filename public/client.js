@@ -16,16 +16,9 @@ const ui = {
   roundLabel: document.getElementById("round-label"),
   turnLabel: document.getElementById("turn-label"),
   readyLabel: document.getElementById("ready-label"),
-  scoreboard: document.getElementById("scoreboard"),
+  scoreLabel: document.getElementById("score-label"),
   startGameButton: document.getElementById("start-game-button"),
-  messages: document.getElementById("messages"),
-  sidePanel: document.querySelector(".side-panel"),
-  toggleSidePanelButton: document.getElementById("toggle-side-panel-button"),
-  touchActions: document.getElementById("touch-actions"),
-  openSidePanelButton: document.getElementById("open-side-panel-button"),
-  centerCameraButton: document.getElementById("center-camera-button"),
-  zoomOutButton: document.getElementById("zoom-out-button"),
-  zoomInButton: document.getElementById("zoom-in-button")
+  topActionSlot: document.getElementById("top-action-slot")
 };
 
 const state = {
@@ -33,6 +26,8 @@ const state = {
   roomCode: "",
   snapshot: null,
   clockOffsetMs: 0,
+  lastServerNowMs: 0,
+  lastPerfNowMs: 0,
   pollTimer: null,
   animationFrame: 0,
   inputStep: "move",
@@ -45,7 +40,6 @@ const state = {
   lastPlanningKey: "",
   pendingPlanSave: null,
   isTouch: window.matchMedia("(pointer: coarse)").matches,
-  sidePanelOpen: false,
   camera: {
     x: 0,
     y: 0,
@@ -128,31 +122,21 @@ function pushMessage(text) {
 }
 
 function currentServerNow() {
-  return Date.now() + state.clockOffsetMs;
+  if (!state.lastServerNowMs || !state.lastPerfNowMs) {
+    return Date.now() + state.clockOffsetMs;
+  }
+  return state.lastServerNowMs + (performance.now() - state.lastPerfNowMs);
 }
 
 function getPlayViewport() {
-  const margin = 16;
-  const topBarHeight = 92;
-  const reservedRight = state.isTouch ? 0 : Math.min(320, window.innerWidth * 0.26) + margin * 2;
-  const reservedBottom = state.isTouch
-    ? (state.sidePanelOpen ? Math.min(240, window.innerHeight * 0.28) : 64) + margin * 2
-    : margin;
-  const availableWidth = window.innerWidth - margin * 2 - reservedRight;
-  const availableHeight = window.innerHeight - topBarHeight - reservedBottom - margin;
-  const size = Math.max(120, Math.min(availableWidth, availableHeight));
-  const x = state.isTouch
-    ? margin + Math.max(0, (window.innerWidth - margin * 2 - size) / 2)
-    : margin + Math.max(0, (availableWidth - size) / 2);
-  const y = topBarHeight + Math.max(0, (availableHeight - size) / 2);
   return {
-    x,
-    y,
-    size,
-    centerX: x + size / 2,
-    centerY: y + size / 2,
-    right: x + size,
-    bottom: y + size
+    x: 0,
+    y: 0,
+    size: Math.min(window.innerWidth, window.innerHeight),
+    centerX: window.innerWidth / 2,
+    centerY: window.innerHeight / 2,
+    right: window.innerWidth,
+    bottom: window.innerHeight
   };
 }
 
@@ -280,6 +264,21 @@ function getCameraTarget() {
   return { x: state.camera.x, y: state.camera.y };
 }
 
+function getLocalShotBullet() {
+  if (
+    !state.snapshot ||
+    state.snapshot.room.phase !== "shooting" ||
+    !state.snapshot.match?.shooting?.bullets?.length
+  ) {
+    return null;
+  }
+  return (
+    state.snapshot.match.shooting.bullets.find(
+      (bullet) => bullet.shooterId === state.snapshot.you.id
+    ) || null
+  );
+}
+
 function ensureCamera() {
   if (!state.snapshot?.match?.map) {
     state.camera.x = 0;
@@ -293,12 +292,18 @@ function ensureCamera() {
   }
   if (state.snapshot.you.alive) {
     const target = getCameraTarget();
+    const localShotBullet = getLocalShotBullet();
     state.camera.zoom = FIXED_CAMERA_ZOOM;
     state.camera.panX = 0;
     state.camera.panY = 0;
     const desiredX = clamp(target.x, 0, map.width);
     const desiredY = clamp(target.y, 0, map.height);
-    if (!state.camera.x && !state.camera.y) {
+    if (
+      !state.camera.x && !state.camera.y ||
+      state.isTouch ||
+      state.snapshot.room.phase === "planning" ||
+      localShotBullet
+    ) {
       state.camera.x = desiredX;
       state.camera.y = desiredY;
     } else {
@@ -388,6 +393,8 @@ async function pollState() {
         state.clockOffsetMs * (1 - CLOCK_OFFSET_SMOOTHING) +
         measuredOffset * CLOCK_OFFSET_SMOOTHING;
     }
+    state.lastServerNowMs = snapshot.serverNow;
+    state.lastPerfNowMs = performance.now();
     handleSnapshot(snapshot);
   } catch (error) {
     ui.menu.classList.remove("hidden");
@@ -500,7 +507,9 @@ function renderHud() {
     : state.snapshot.you.alive
       ? "Planning"
       : "Spectating";
-  ui.startGameButton.classList.toggle(
+  const leaderWins = Math.max(0, ...state.snapshot.players.map((player) => player.wins || 0));
+  ui.scoreLabel.textContent = `${state.snapshot.you.wins || 0}W / ${leaderWins}W`;
+  ui.topActionSlot.classList.toggle(
     "hidden",
     !(state.snapshot.you.isHost && state.snapshot.room.phase === "lobby")
   );
@@ -509,43 +518,11 @@ function renderHud() {
     state.snapshot.room.connectedCount < state.snapshot.room.minPlayers
       ? "Need 2 Players"
       : "Start Game";
-
-  ui.scoreboard.innerHTML = "";
-  const scoreboard = [...state.snapshot.players].sort((a, b) => b.wins - a.wins || b.survivalMs - a.survivalMs);
-  scoreboard.forEach((player) => {
-    const row = document.createElement("div");
-    row.className = "score-row";
-    const name = document.createElement("div");
-    name.className = "score-name";
-    const swatch = document.createElement("span");
-    swatch.className = "swatch";
-    swatch.style.background = player.color;
-    const text = document.createElement("span");
-    text.textContent = `${player.name}${player.id === state.snapshot.room.hostId ? " (Host)" : ""}${player.id === state.snapshot.you.id ? " (You)" : ""}${!player.connected ? " [DC]" : ""}`;
-    name.append(swatch, text);
-    const meta = document.createElement("div");
-    meta.textContent = `${player.wins}W`;
-    row.append(name, meta);
-    ui.scoreboard.append(row);
-  });
-
-  ui.messages.innerHTML = "";
-  state.messageLog.forEach((message) => {
-    const row = document.createElement("div");
-    row.className = "message";
-    row.textContent = message;
-    ui.messages.append(row);
-  });
-
-  ui.touchActions.classList.toggle("hidden", !state.isTouch);
-  ui.toggleSidePanelButton.classList.toggle("hidden", !state.isTouch);
-  ui.sidePanel.classList.toggle("hidden", state.isTouch && !state.sidePanelOpen);
-  ui.openSidePanelButton.classList.toggle("hidden", !state.isTouch || state.sidePanelOpen);
 }
 
 function drawBackground(map, viewport) {
   ctx.fillStyle = "#ede2c8";
-  ctx.fillRect(viewport.x, viewport.y, viewport.size, viewport.size);
+  ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
 
   const grid = 120 * (state.camera.zoom || 1);
   ctx.strokeStyle = "rgba(92, 78, 50, 0.06)";
@@ -553,15 +530,15 @@ function drawBackground(map, viewport) {
   const offsetX = ((viewport.centerX - state.camera.x * state.camera.zoom) % grid + grid) % grid;
   const offsetY = ((viewport.centerY - state.camera.y * state.camera.zoom) % grid + grid) % grid;
 
-  for (let x = viewport.x + offsetX; x < viewport.right; x += grid) {
+  for (let x = offsetX; x < viewport.right; x += grid) {
     ctx.beginPath();
-    ctx.moveTo(x, viewport.y);
+    ctx.moveTo(x, 0);
     ctx.lineTo(x, viewport.bottom);
     ctx.stroke();
   }
-  for (let y = viewport.y + offsetY; y < viewport.bottom; y += grid) {
+  for (let y = offsetY; y < viewport.bottom; y += grid) {
     ctx.beginPath();
-    ctx.moveTo(viewport.x, y);
+    ctx.moveTo(0, y);
     ctx.lineTo(viewport.right, y);
     ctx.stroke();
   }
@@ -837,7 +814,7 @@ function render() {
   const viewport = getPlayViewport();
   ctx.save();
   ctx.beginPath();
-  ctx.rect(viewport.x, viewport.y, viewport.size, viewport.size);
+  ctx.rect(0, 0, viewport.right, viewport.bottom);
   ctx.clip();
   drawBackground(state.snapshot.match.map, viewport);
   drawBuildings(state.snapshot.match.map);
@@ -845,9 +822,6 @@ function render() {
   drawBullets();
   drawPlayers();
   ctx.restore();
-  ctx.strokeStyle = "rgba(45, 32, 18, 0.35)";
-  ctx.lineWidth = 3;
-  ctx.strokeRect(viewport.x, viewport.y, viewport.size, viewport.size);
   drawSpectatorHint();
   drawOverlayText();
   state.animationFrame = requestAnimationFrame(render);
@@ -1060,34 +1034,15 @@ ui.roomCodeInput.addEventListener("input", () => {
   ui.roomCodeInput.value = ui.roomCodeInput.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 4);
 });
 
-ui.centerCameraButton.addEventListener("click", () => {
-  if (!state.snapshot?.match?.map) {
-    return;
-  }
-  state.camera.panX = 0;
-  state.camera.panY = 0;
-  state.camera.x = state.snapshot.match.map.width / 2;
-  state.camera.y = state.snapshot.match.map.height / 2;
-});
-
-ui.zoomOutButton.addEventListener("click", () => {
-  state.camera.zoom = FIXED_CAMERA_ZOOM;
-});
-
-ui.zoomInButton.addEventListener("click", () => {
-  state.camera.zoom = FIXED_CAMERA_ZOOM;
-});
-
-ui.toggleSidePanelButton.addEventListener("click", () => {
-  state.sidePanelOpen = false;
-  renderHud();
-});
-
-ui.openSidePanelButton.addEventListener("click", () => {
-  state.sidePanelOpen = true;
-  renderHud();
-});
-
 window.addEventListener("resize", resizeCanvas);
+["gesturestart", "gesturechange", "gestureend"].forEach((eventName) => {
+  window.addEventListener(
+    eventName,
+    (event) => {
+      event.preventDefault();
+    },
+    { passive: false }
+  );
+});
 resizeCanvas();
 render();

@@ -317,46 +317,20 @@ function pointClearForCircle(point, radius, map) {
   return insideWorld(point, radius, map) && !pointBlockedByBuilding(point, radius, map);
 }
 
-function moveCircleWithSliding(current, delta, radius, map) {
-  if (!delta.x && !delta.y) {
-    return { x: current.x, y: current.y };
-  }
-
-  let adjustedDelta = { x: delta.x, y: delta.y };
-  for (let iteration = 0; iteration < 4; iteration += 1) {
-    const candidate = add(current, adjustedDelta);
-    const normals = collisionNormalsAtPoint(candidate, radius, map);
-    if (!normals.length && segmentClearForCircle(current, candidate, radius, map)) {
-      return candidate;
-    }
-
-    let changed = false;
-    for (const normal of normals) {
-      const dot = adjustedDelta.x * normal.x + adjustedDelta.y * normal.y;
-      if (dot < 0) {
-        adjustedDelta = subtract(adjustedDelta, scale(normal, dot));
-        changed = true;
-      }
-    }
-
-    if (!changed) {
-      break;
-    }
-  }
-
-  const adjustedCandidate = add(current, adjustedDelta);
+function furthestClearPointAlongDelta(current, delta, radius, map) {
+  const fullCandidate = add(current, delta);
   if (
-    pointClearForCircle(adjustedCandidate, radius, map) &&
-    segmentClearForCircle(current, adjustedCandidate, radius, map)
+    pointClearForCircle(fullCandidate, radius, map) &&
+    segmentClearForCircle(current, fullCandidate, radius, map)
   ) {
-    return adjustedCandidate;
+    return fullCandidate;
   }
 
   let low = 0;
   let high = 1;
-  for (let i = 0; i < 10; i += 1) {
+  for (let i = 0; i < 12; i += 1) {
     const mid = (low + high) / 2;
-    const probe = add(current, scale(adjustedDelta, mid));
+    const probe = add(current, scale(delta, mid));
     if (
       pointClearForCircle(probe, radius, map) &&
       segmentClearForCircle(current, probe, radius, map)
@@ -366,7 +340,59 @@ function moveCircleWithSliding(current, delta, radius, map) {
       high = mid;
     }
   }
-  return add(current, scale(adjustedDelta, low));
+  return add(current, scale(delta, low));
+}
+
+function moveCircleWithSliding(current, delta, radius, map) {
+  if (!delta.x && !delta.y) {
+    return { x: current.x, y: current.y };
+  }
+
+  const totalDistance = Math.hypot(delta.x, delta.y);
+  const substeps = Math.max(1, Math.ceil(totalDistance / 10));
+  const stepDelta = scale(delta, 1 / substeps);
+  let position = { x: current.x, y: current.y };
+
+  for (let stepIndex = 0; stepIndex < substeps; stepIndex += 1) {
+    const desired = { x: stepDelta.x, y: stepDelta.y };
+    const directCandidate = add(position, desired);
+    if (
+      pointClearForCircle(directCandidate, radius, map) &&
+      segmentClearForCircle(position, directCandidate, radius, map)
+    ) {
+      position = directCandidate;
+      continue;
+    }
+
+    const advanced = furthestClearPointAlongDelta(position, desired, radius, map);
+    const remainder = subtract(directCandidate, advanced);
+    position = advanced;
+
+    const normals = collisionNormalsAtPoint(directCandidate, radius, map);
+    if (!normals.length) {
+      continue;
+    }
+
+    let combined = { x: 0, y: 0 };
+    for (const normal of normals) {
+      combined = add(combined, normal);
+    }
+    const collisionNormal = normalizeVector(combined, normals[0]);
+    const intoWall = dot(remainder, collisionNormal);
+    let slide = { x: remainder.x, y: remainder.y };
+    if (intoWall < 0) {
+      slide = subtract(remainder, scale(collisionNormal, intoWall));
+    }
+
+    if (!slide.x && !slide.y) {
+      continue;
+    }
+
+    const slid = furthestClearPointAlongDelta(position, slide, radius, map);
+    position = slid;
+  }
+
+  return position;
 }
 
 function interpolateMotionEntry(entry, elapsedMs) {
