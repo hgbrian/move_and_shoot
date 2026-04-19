@@ -519,7 +519,7 @@ function sanitizePlayerName(rawName) {
 
 function sanitizeMapGridSize(rawValue) {
   const parsed = Number(rawValue);
-  return parsed === 4 ? 4 : 2;
+  return parsed === 3 || parsed === 4 ? parsed : 2;
 }
 
 function generateMap(mapGridSize) {

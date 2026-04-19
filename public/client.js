@@ -574,7 +574,8 @@ function drawPlayer(player) {
   const alive = player.alive;
   const brimRadius = radius * 1.3;
   const crownRadius = radius * 0.72;
-  const crownOffsetY = 0;
+  const crownCenterX = 0;
+  const crownCenterY = 0;
   ctx.save();
   ctx.translate(screen.x, screen.y);
 
@@ -585,13 +586,13 @@ function drawPlayer(player) {
 
   ctx.fillStyle = alive ? player.color : "rgba(110, 110, 110, 0.5)";
   ctx.beginPath();
-  ctx.arc(0, crownOffsetY, crownRadius, 0, Math.PI * 2);
+  ctx.arc(crownCenterX, crownCenterY, crownRadius, 0, Math.PI * 2);
   ctx.fill();
 
   ctx.strokeStyle = "rgba(255, 248, 232, 0.32)";
   ctx.lineWidth = 2;
   ctx.beginPath();
-  ctx.arc(0, crownOffsetY, crownRadius * 0.72, 0, Math.PI * 2);
+  ctx.arc(crownCenterX, crownCenterY, crownRadius * 0.72, 0, Math.PI * 2);
   ctx.stroke();
 
   ctx.strokeStyle = "rgba(33, 18, 9, 0.58)";
@@ -604,7 +605,7 @@ function drawPlayer(player) {
   ctx.strokeStyle = alive ? "rgba(33, 18, 9, 0.7)" : "rgba(33,18,9,0.25)";
   ctx.lineWidth = 3;
   ctx.beginPath();
-  ctx.moveTo(0, crownOffsetY * 0.45);
+  ctx.moveTo(crownCenterX, crownCenterY);
   ctx.lineTo(aimDir.x * brimRadius * 1.15, aimDir.y * brimRadius * 1.15);
   ctx.stroke();
   ctx.restore();
