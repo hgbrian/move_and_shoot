@@ -72,6 +72,7 @@ const state = {
 
 const FIXED_CAMERA_ZOOM = 0.624;
 const CAMERA_FOLLOW_SMOOTHING = 0.2;
+const CAMERA_BULLET_SMOOTHING = 0.12;
 const CLOCK_OFFSET_SMOOTHING = 0.15;
 
 class SoundBoard {
@@ -562,8 +563,8 @@ function getCameraTarget() {
     if (localBullet) {
       const shooting = state.snapshot.match.shooting;
       const elapsed = currentPlaybackServerNow() - shooting.startedAt;
-      const cameraLeadMs = 80;
-      const clampedElapsed = clamp(elapsed + cameraLeadMs, 0, localBullet.stopTimeMs);
+      const cameraLeadMs = 40;
+      const clampedElapsed = clamp(elapsed + cameraLeadMs, 0, localBullet.stopTimeMs + cameraLeadMs);
       const travelDistance =
         (clampedElapsed / 1000) * state.snapshot.config.bulletSpeed;
       return {
@@ -617,14 +618,14 @@ function ensureCamera() {
       !state.camera.x && !state.camera.y ||
       state.isTouch ||
       state.snapshot.room.phase === "planning" ||
-      state.snapshot.room.phase === "movement" ||
-      localShotBullet
+      state.snapshot.room.phase === "movement"
     ) {
       state.camera.x = desiredX;
       state.camera.y = desiredY;
     } else {
-      state.camera.x = lerp(state.camera.x, desiredX, CAMERA_FOLLOW_SMOOTHING);
-      state.camera.y = lerp(state.camera.y, desiredY, CAMERA_FOLLOW_SMOOTHING);
+      const smoothing = localShotBullet ? CAMERA_BULLET_SMOOTHING : CAMERA_FOLLOW_SMOOTHING;
+      state.camera.x = lerp(state.camera.x, desiredX, smoothing);
+      state.camera.y = lerp(state.camera.y, desiredY, smoothing);
     }
   } else {
     state.camera.zoom = FIXED_CAMERA_ZOOM;
@@ -765,7 +766,7 @@ function handleSnapshot(snapshot) {
         durationMs: 0
       };
     }
-    if (snapshot.room.phase === "shooting") {
+    if (snapshot.room.phase === "shooting" && snapshot.match?.shooting?.bullets?.length) {
       sounds.shoot();
     }
     pushMessage(snapshot.room.phaseLabel);
@@ -844,7 +845,9 @@ function renderHud() {
   }
   ui.roomCodeLabel.textContent = state.snapshot.room.code;
   ui.phaseLabel.textContent = state.snapshot.room.phaseLabel;
-  ui.timerLabel.textContent = formatSeconds(getPhaseTimeRemaining());
+  ui.timerLabel.textContent = state.snapshot.room.phase === "planning"
+    ? formatSeconds(getPhaseTimeRemaining())
+    : "—";
   ui.roundLabel.textContent = state.snapshot.match.active
     ? `${state.snapshot.match.currentRound} / ${state.snapshot.match.totalRounds}`
     : "- / 3";
