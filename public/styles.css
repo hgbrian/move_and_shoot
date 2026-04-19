@@ -192,6 +192,20 @@ button.primary {
   color: var(--muted);
 }
 
+.side-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.icon-button {
+  padding: 8px 12px;
+  border-radius: 12px;
+  background: rgba(27, 20, 13, 0.08);
+  min-width: 40px;
+}
+
 .separator {
   height: 1px;
   background: rgba(27, 20, 13, 0.12);
@@ -261,5 +275,11 @@ button.primary {
 
   #touch-actions {
     display: flex;
+  }
+
+  .icon-button {
+    display: inline-flex !important;
+    align-items: center;
+    justify-content: center;
   }
 }

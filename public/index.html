@@ -68,7 +68,10 @@
         </div>
 
         <div class="side-panel panel">
-          <h2>Scoreboard</h2>
+          <div class="side-panel-header">
+            <h2>Scoreboard</h2>
+            <button id="toggle-side-panel-button" class="icon-button hidden" type="button" aria-label="Hide scoreboard">X</button>
+          </div>
           <div id="scoreboard"></div>
           <div class="separator"></div>
           <div class="actions stacked">
@@ -80,6 +83,7 @@
         </div>
 
         <div id="touch-actions" class="panel hidden">
+          <button id="open-side-panel-button" class="hidden">Scores</button>
           <button id="center-camera-button">Center</button>
           <button id="zoom-out-button">-</button>
           <button id="zoom-in-button">+</button>

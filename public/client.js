@@ -19,7 +19,10 @@ const ui = {
   scoreboard: document.getElementById("scoreboard"),
   startGameButton: document.getElementById("start-game-button"),
   messages: document.getElementById("messages"),
+  sidePanel: document.querySelector(".side-panel"),
+  toggleSidePanelButton: document.getElementById("toggle-side-panel-button"),
   touchActions: document.getElementById("touch-actions"),
+  openSidePanelButton: document.getElementById("open-side-panel-button"),
   centerCameraButton: document.getElementById("center-camera-button"),
   zoomOutButton: document.getElementById("zoom-out-button"),
   zoomInButton: document.getElementById("zoom-in-button")
@@ -42,6 +45,7 @@ const state = {
   lastPlanningKey: "",
   pendingPlanSave: null,
   isTouch: window.matchMedia("(pointer: coarse)").matches,
+  sidePanelOpen: true,
   camera: {
     x: 0,
     y: 0,
@@ -58,6 +62,10 @@ const state = {
     mode: "spectator"
   }
 };
+
+const FIXED_CAMERA_ZOOM = 0.78;
+const CAMERA_FOLLOW_SMOOTHING = 0.2;
+const CLOCK_OFFSET_SMOOTHING = 0.15;
 
 class SoundBoard {
   constructor() {
@@ -221,6 +229,25 @@ function getCameraTarget() {
   if (!state.snapshot) {
     return { x: 0, y: 0 };
   }
+  if (
+    state.snapshot.room.phase === "shooting" &&
+    state.snapshot.match?.shooting?.bullets?.length
+  ) {
+    const localBullet = state.snapshot.match.shooting.bullets.find(
+      (bullet) => bullet.shooterId === state.snapshot.you.id
+    );
+    if (localBullet) {
+      const shooting = state.snapshot.match.shooting;
+      const elapsed = currentServerNow() - shooting.startedAt;
+      const clampedElapsed = clamp(elapsed, 0, localBullet.stopTimeMs);
+      const travelDistance =
+        (clampedElapsed / 1000) * state.snapshot.config.bulletSpeed;
+      return {
+        x: localBullet.origin.x + localBullet.direction.x * travelDistance,
+        y: localBullet.origin.y + localBullet.direction.y * travelDistance
+      };
+    }
+  }
   const you = byId(state.snapshot.you.id) || state.snapshot.you;
   if (state.snapshot.you.alive) {
     return getAnimatedPlayerPosition(you);
@@ -237,16 +264,28 @@ function ensureCamera() {
 
   const map = state.snapshot.match.map;
   if (!state.camera.zoom) {
-    state.camera.zoom = state.isTouch ? 0.6 : 0.78;
+    state.camera.zoom = FIXED_CAMERA_ZOOM;
   }
   if (state.snapshot.you.alive) {
     const target = getCameraTarget();
-    state.camera.x = clamp(target.x + state.camera.panX, 0, map.width);
-    state.camera.y = clamp(target.y + state.camera.panY, 0, map.height);
+    state.camera.zoom = FIXED_CAMERA_ZOOM;
+    state.camera.panX = 0;
+    state.camera.panY = 0;
+    const desiredX = clamp(target.x, 0, map.width);
+    const desiredY = clamp(target.y, 0, map.height);
+    if (!state.camera.x && !state.camera.y) {
+      state.camera.x = desiredX;
+      state.camera.y = desiredY;
+    } else {
+      state.camera.x = lerp(state.camera.x, desiredX, CAMERA_FOLLOW_SMOOTHING);
+      state.camera.y = lerp(state.camera.y, desiredY, CAMERA_FOLLOW_SMOOTHING);
+    }
   } else {
-    state.camera.zoom = clamp(state.camera.zoom || 0.55, 0.3, 1.6);
-    state.camera.x = clamp(state.camera.x || map.width / 2, 0, map.width);
-    state.camera.y = clamp(state.camera.y || map.height / 2, 0, map.height);
+    state.camera.zoom = FIXED_CAMERA_ZOOM;
+    const desiredX = clamp(state.camera.x || map.width / 2, 0, map.width);
+    const desiredY = clamp(state.camera.y || map.height / 2, 0, map.height);
+    state.camera.x = lerp(state.camera.x || desiredX, desiredX, CAMERA_FOLLOW_SMOOTHING);
+    state.camera.y = lerp(state.camera.y || desiredY, desiredY, CAMERA_FOLLOW_SMOOTHING);
   }
 }
 
@@ -314,7 +353,14 @@ async function pollState() {
   }
   try {
     const snapshot = await api(`/api/state?token=${encodeURIComponent(state.token)}`);
-    state.clockOffsetMs = snapshot.serverNow - Date.now();
+    const measuredOffset = snapshot.serverNow - Date.now();
+    if (!state.snapshot) {
+      state.clockOffsetMs = measuredOffset;
+    } else {
+      state.clockOffsetMs =
+        state.clockOffsetMs * (1 - CLOCK_OFFSET_SMOOTHING) +
+        measuredOffset * CLOCK_OFFSET_SMOOTHING;
+    }
     handleSnapshot(snapshot);
   } catch (error) {
     ui.menu.classList.remove("hidden");
@@ -465,6 +511,9 @@ function renderHud() {
   });
 
   ui.touchActions.classList.toggle("hidden", !state.isTouch);
+  ui.toggleSidePanelButton.classList.toggle("hidden", !state.isTouch);
+  ui.sidePanel.classList.toggle("hidden", state.isTouch && !state.sidePanelOpen);
+  ui.openSidePanelButton.classList.toggle("hidden", !state.isTouch || state.sidePanelOpen);
 }
 
 function drawBackground(map) {
@@ -577,14 +626,14 @@ function drawBullets() {
       x: currentPoint.x - bullet.direction.x * 64,
       y: currentPoint.y - bullet.direction.y * 64
     });
-    ctx.strokeStyle = "rgba(24, 12, 6, 0.96)";
-    ctx.lineWidth = 6;
+    ctx.strokeStyle = "rgba(6, 4, 3, 0.98)";
+    ctx.lineWidth = 7;
     ctx.beginPath();
     ctx.moveTo(tail.x, tail.y);
     ctx.lineTo(head.x, head.y);
     ctx.stroke();
-    ctx.strokeStyle = "rgba(214, 120, 77, 0.95)";
-    ctx.lineWidth = 2.5;
+    ctx.strokeStyle = "rgba(120, 52, 28, 0.98)";
+    ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.moveTo(tail.x, tail.y);
     ctx.lineTo(head.x, head.y);
@@ -627,11 +676,45 @@ function drawPlayer(player) {
   ctx.stroke();
 
   const aimDir = player.lastAimDir || { x: 0, y: -1 };
-  ctx.strokeStyle = alive ? "rgba(33, 18, 9, 0.7)" : "rgba(33,18,9,0.25)";
+  const gunStart = {
+    x: crownCenterX + aimDir.x * (crownRadius * 0.35),
+    y: crownCenterY + aimDir.y * (crownRadius * 0.35)
+  };
+  const gunEnd = {
+    x: crownCenterX + aimDir.x * (brimRadius * 1.2),
+    y: crownCenterY + aimDir.y * (brimRadius * 1.2)
+  };
+  const gunPerp = {
+    x: -aimDir.y,
+    y: aimDir.x
+  };
+
+  ctx.strokeStyle = alive ? "rgba(33, 18, 9, 0.88)" : "rgba(33,18,9,0.3)";
+  ctx.lineWidth = 4;
+  ctx.lineCap = "round";
+  ctx.beginPath();
+  ctx.moveTo(gunStart.x, gunStart.y);
+  ctx.lineTo(gunEnd.x, gunEnd.y);
+  ctx.stroke();
+
+  ctx.strokeStyle = alive ? "rgba(255, 244, 230, 0.45)" : "rgba(255,255,255,0.12)";
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(gunStart.x, gunStart.y);
+  ctx.lineTo(gunEnd.x, gunEnd.y);
+  ctx.stroke();
+
+  ctx.strokeStyle = alive ? "rgba(33, 18, 9, 0.7)" : "rgba(33,18,9,0.22)";
   ctx.lineWidth = 3;
   ctx.beginPath();
-  ctx.moveTo(crownCenterX, crownCenterY);
-  ctx.lineTo(aimDir.x * brimRadius * 1.15, aimDir.y * brimRadius * 1.15);
+  ctx.moveTo(
+    crownCenterX - aimDir.x * (crownRadius * 0.15) - gunPerp.x * (crownRadius * 0.28),
+    crownCenterY - aimDir.y * (crownRadius * 0.15) - gunPerp.y * (crownRadius * 0.28)
+  );
+  ctx.lineTo(
+    crownCenterX - aimDir.x * (crownRadius * 0.15) + gunPerp.x * (crownRadius * 0.28),
+    crownCenterY - aimDir.y * (crownRadius * 0.15) + gunPerp.y * (crownRadius * 0.28)
+  );
   ctx.stroke();
   ctx.restore();
 
@@ -826,13 +909,13 @@ canvas.addEventListener("pointerdown", async (event) => {
   if (!state.snapshot?.match?.active) {
     return;
   }
-  if (!state.snapshot.you.alive || event.button === 1 || event.button === 2) {
+  if (!state.snapshot.you.alive) {
     state.dragCamera.active = true;
     state.dragCamera.startX = event.clientX;
     state.dragCamera.startY = event.clientY;
-    state.dragCamera.originX = state.snapshot.you.alive ? state.camera.panX : state.camera.x;
-    state.dragCamera.originY = state.snapshot.you.alive ? state.camera.panY : state.camera.y;
-    state.dragCamera.mode = state.snapshot.you.alive ? "alive" : "spectator";
+    state.dragCamera.originX = state.camera.x;
+    state.dragCamera.originY = state.camera.y;
+    state.dragCamera.mode = "spectator";
     return;
   }
   if (event.button !== 0) {
@@ -849,11 +932,6 @@ window.addEventListener("pointermove", (event) => {
   }
   const dx = (event.clientX - state.dragCamera.startX) / state.camera.zoom;
   const dy = (event.clientY - state.dragCamera.startY) / state.camera.zoom;
-  if (state.dragCamera.mode === "alive") {
-    state.camera.panX = state.dragCamera.originX - dx;
-    state.camera.panY = state.dragCamera.originY - dy;
-    return;
-  }
   state.camera.x = state.dragCamera.originX - dx;
   state.camera.y = state.dragCamera.originY - dy;
 });
@@ -867,8 +945,9 @@ window.addEventListener("pointerup", () => {
 });
 
 window.addEventListener("wheel", (event) => {
-  event.preventDefault();
-  state.camera.zoom = clamp(state.camera.zoom - Math.sign(event.deltaY) * 0.07, 0.3, 1.6);
+  if (state.snapshot?.match?.active) {
+    event.preventDefault();
+  }
 }, { passive: false });
 
 window.addEventListener("contextmenu", (event) => {
@@ -881,22 +960,11 @@ window.addEventListener("keydown", (event) => {
   if (!state.snapshot?.match?.active || !state.snapshot.you.alive) {
     return;
   }
-  const step = 80;
-  if (event.key === "ArrowUp" || event.key === "w" || event.key === "W") {
-    state.camera.panY -= step;
-  } else if (event.key === "ArrowDown" || event.key === "s" || event.key === "S") {
-    state.camera.panY += step;
-  } else if (event.key === "ArrowLeft" || event.key === "a" || event.key === "A") {
-    state.camera.panX -= step;
-  } else if (event.key === "ArrowRight" || event.key === "d" || event.key === "D") {
-    state.camera.panX += step;
-  } else if (event.key === "c" || event.key === "C") {
+  if (event.key === "c" || event.key === "C") {
     state.camera.panX = 0;
     state.camera.panY = 0;
-  } else {
-    return;
+    event.preventDefault();
   }
-  event.preventDefault();
 });
 
 window.addEventListener("beforeunload", () => {
@@ -954,11 +1022,21 @@ ui.centerCameraButton.addEventListener("click", () => {
 });
 
 ui.zoomOutButton.addEventListener("click", () => {
-  state.camera.zoom = clamp(state.camera.zoom - 0.1, 0.3, 1.6);
+  state.camera.zoom = FIXED_CAMERA_ZOOM;
 });
 
 ui.zoomInButton.addEventListener("click", () => {
-  state.camera.zoom = clamp(state.camera.zoom + 0.1, 0.3, 1.6);
+  state.camera.zoom = FIXED_CAMERA_ZOOM;
+});
+
+ui.toggleSidePanelButton.addEventListener("click", () => {
+  state.sidePanelOpen = false;
+  renderHud();
+});
+
+ui.openSidePanelButton.addEventListener("click", () => {
+  state.sidePanelOpen = true;
+  renderHud();
 });
 
 window.addEventListener("resize", resizeCanvas);
