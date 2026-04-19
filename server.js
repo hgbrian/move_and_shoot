@@ -317,6 +317,10 @@ function pointClearForCircle(point, radius, map) {
   return insideWorld(point, radius, map) && !pointBlockedByBuilding(point, radius, map);
 }
 
+function perpendicular(vector) {
+  return { x: -vector.y, y: vector.x };
+}
+
 function furthestClearPointAlongDelta(current, delta, radius, map) {
   const fullCandidate = add(current, delta);
   if (
@@ -340,7 +344,8 @@ function furthestClearPointAlongDelta(current, delta, radius, map) {
       high = mid;
     }
   }
-  return add(current, scale(delta, low));
+  const safeT = Math.max(0, low - 0.001);
+  return add(current, scale(delta, safeT));
 }
 
 function moveCircleWithSliding(current, delta, radius, map) {
@@ -349,8 +354,9 @@ function moveCircleWithSliding(current, delta, radius, map) {
   }
 
   const totalDistance = Math.hypot(delta.x, delta.y);
-  const substeps = Math.max(1, Math.ceil(totalDistance / 10));
+  const substeps = Math.max(1, Math.ceil(totalDistance / 4));
   const stepDelta = scale(delta, 1 / substeps);
+  const skin = 1.25;
   let position = { x: current.x, y: current.y };
 
   for (let stepIndex = 0; stepIndex < substeps; stepIndex += 1) {
@@ -365,26 +371,39 @@ function moveCircleWithSliding(current, delta, radius, map) {
     }
 
     const advanced = furthestClearPointAlongDelta(position, desired, radius, map);
-    const remainder = subtract(directCandidate, advanced);
+    const advancedDelta = subtract(advanced, position);
+    const remainder = subtract(desired, advancedDelta);
     position = advanced;
+    if (Math.hypot(remainder.x, remainder.y) < 1e-4) {
+      continue;
+    }
 
-    const normals = collisionNormalsAtPoint(directCandidate, radius, map);
+    const blockedProbe = add(position, remainder);
+    const normals = collisionNormalsAtPoint(blockedProbe, radius, map);
     if (!normals.length) {
       continue;
     }
 
-    let combined = { x: 0, y: 0 };
-    for (const normal of normals) {
-      combined = add(combined, normal);
-    }
-    const collisionNormal = normalizeVector(combined, normals[0]);
-    const intoWall = dot(remainder, collisionNormal);
-    let slide = { x: remainder.x, y: remainder.y };
-    if (intoWall < 0) {
-      slide = subtract(remainder, scale(collisionNormal, intoWall));
+    let collisionNormal = normals[0];
+    let strongestIntoWall = dot(remainder, collisionNormal);
+    for (const normal of normals.slice(1)) {
+      const candidateDot = dot(remainder, normal);
+      if (candidateDot < strongestIntoWall) {
+        strongestIntoWall = candidateDot;
+        collisionNormal = normal;
+      }
     }
 
-    if (!slide.x && !slide.y) {
+    const intoWall = dot(remainder, collisionNormal);
+    if (intoWall >= 0) {
+      continue;
+    }
+
+    const separated = furthestClearPointAlongDelta(position, scale(collisionNormal, skin), radius, map);
+    position = separated;
+
+    const slide = subtract(remainder, scale(collisionNormal, intoWall));
+    if (Math.hypot(slide.x, slide.y) < 1e-4) {
       continue;
     }
 

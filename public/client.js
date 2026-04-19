@@ -40,6 +40,17 @@ const state = {
   lastPlanningKey: "",
   pendingPlanSave: null,
   isTouch: window.matchMedia("(pointer: coarse)").matches,
+  playback: {
+    phase: "",
+    serverStartMs: 0,
+    clientStartPerfMs: 0,
+    durationMs: 0
+  },
+  dragPlan: {
+    active: false,
+    mode: "",
+    pointerType: ""
+  },
   camera: {
     x: 0,
     y: 0,
@@ -126,6 +137,21 @@ function currentServerNow() {
     return Date.now() + state.clockOffsetMs;
   }
   return state.lastServerNowMs + (performance.now() - state.lastPerfNowMs);
+}
+
+function currentPlaybackServerNow() {
+  const playback = state.playback;
+  if (
+    playback.phase &&
+    state.snapshot?.room.phase === playback.phase &&
+    playback.serverStartMs &&
+    playback.clientStartPerfMs
+  ) {
+    const elapsed = performance.now() - playback.clientStartPerfMs;
+    const clampedElapsed = Math.max(0, Math.min(elapsed, playback.durationMs || elapsed));
+    return playback.serverStartMs + clampedElapsed;
+  }
+  return currentServerNow();
 }
 
 function getPlayViewport() {
@@ -229,7 +255,7 @@ function getAnimatedPlayerPosition(player) {
     return interpolateMovementEntry(entry, entry.haltedAtMs || movement.durationMs);
   }
 
-  const elapsed = currentServerNow() - movement.startedAt;
+  const elapsed = currentPlaybackServerNow() - movement.startedAt;
   const activeDuration = Math.max(entry.haltedAtMs || movement.durationMs, 1);
   return interpolateMovementEntry(entry, clamp(elapsed, 0, activeDuration));
 }
@@ -247,7 +273,7 @@ function getCameraTarget() {
     );
     if (localBullet) {
       const shooting = state.snapshot.match.shooting;
-      const elapsed = currentServerNow() - shooting.startedAt;
+      const elapsed = currentPlaybackServerNow() - shooting.startedAt;
       const clampedElapsed = clamp(elapsed, 0, localBullet.stopTimeMs);
       const travelDistance =
         (clampedElapsed / 1000) * state.snapshot.config.bulletSpeed;
@@ -302,6 +328,7 @@ function ensureCamera() {
       !state.camera.x && !state.camera.y ||
       state.isTouch ||
       state.snapshot.room.phase === "planning" ||
+      state.snapshot.room.phase === "movement" ||
       localShotBullet
     ) {
       state.camera.x = desiredX;
@@ -395,6 +422,8 @@ async function pollState() {
     }
     state.lastServerNowMs = snapshot.serverNow;
     state.lastPerfNowMs = performance.now();
+    state.lastServerNowMs = snapshot.serverNow;
+    state.lastPerfNowMs = performance.now();
     handleSnapshot(snapshot);
   } catch (error) {
     ui.menu.classList.remove("hidden");
@@ -416,6 +445,28 @@ function handleSnapshot(snapshot) {
     : snapshot.room.phase;
 
   if (snapshot.room.phase !== state.lastPhase) {
+    if (snapshot.room.phase === "movement" && snapshot.match?.movement) {
+      state.playback = {
+        phase: "movement",
+        serverStartMs: snapshot.match.movement.startedAt,
+        clientStartPerfMs: performance.now(),
+        durationMs: snapshot.match.movement.durationMs
+      };
+    } else if (snapshot.room.phase === "shooting" && snapshot.match?.shooting) {
+      state.playback = {
+        phase: "shooting",
+        serverStartMs: snapshot.match.shooting.startedAt,
+        clientStartPerfMs: performance.now(),
+        durationMs: snapshot.match.shooting.durationMs
+      };
+    } else if (snapshot.room.phase !== "movement" && snapshot.room.phase !== "shooting") {
+      state.playback = {
+        phase: "",
+        serverStartMs: 0,
+        clientStartPerfMs: 0,
+        durationMs: 0
+      };
+    }
     if (snapshot.room.phase === "shooting") {
       sounds.shoot();
     }
@@ -618,7 +669,7 @@ function drawBullets() {
     return;
   }
   const shooting = state.snapshot.match.shooting;
-  const elapsed = currentServerNow() - shooting.startedAt;
+  const elapsed = currentPlaybackServerNow() - shooting.startedAt;
   shooting.bullets.forEach((bullet) => {
     const fraction = clamp(elapsed / Math.max(bullet.stopTimeMs, 1), 0, 1);
     const currentPoint = {
@@ -835,21 +886,99 @@ function getCanvasPoint(event) {
   };
 }
 
-async function handleScreenPointInput(point) {
-  if (!state.snapshot?.match?.active || !state.snapshot.you.alive) {
-    return;
-  }
+function pointInsidePlayArea(point) {
   const viewport = getPlayViewport();
-  if (
+  return !(
     point.x < viewport.x ||
     point.x > viewport.right ||
     point.y < viewport.y ||
     point.y > viewport.bottom
-  ) {
-    return;
+  );
+}
+
+function updatePlanDraftFromScreenPoint(point, mode) {
+  if (!state.snapshot?.match?.active || !state.snapshot.you.alive || !pointInsidePlayArea(point)) {
+    return false;
   }
   const world = screenToWorld(point);
-  await handlePlanningClick(world);
+  if (mode === "move") {
+    state.draftMoveTarget = clampMoveTarget(world);
+    return true;
+  }
+
+  const you = byId(state.snapshot.you.id) || state.snapshot.you;
+  const origin = state.draftMoveTarget || state.snapshot.planning?.plan?.moveTarget || { x: you.x, y: you.y };
+  state.draftAimDir = normalize({
+    x: world.x - origin.x,
+    y: world.y - origin.y
+  }, state.snapshot.you.lastAimDir);
+  return true;
+}
+
+async function commitCurrentDraft(mode) {
+  if (!state.snapshot?.you.alive || state.snapshot.room.phase !== "planning") {
+    return;
+  }
+
+  const you = byId(state.snapshot.you.id) || state.snapshot.you;
+  if (mode === "move") {
+    const moveTarget = state.draftMoveTarget || { x: you.x, y: you.y };
+    await savePlan({
+      moveTarget,
+      aimDir: state.draftAimDir || state.snapshot.planning?.plan?.aimDir || state.snapshot.you.lastAimDir
+    });
+    pushMessage("Move target set. Drag again to aim.");
+    state.inputStep = "aim";
+    return;
+  }
+
+  const moveTarget =
+    state.draftMoveTarget ||
+    state.snapshot.planning?.plan?.moveTarget ||
+    { x: you.x, y: you.y };
+  await savePlan({
+    moveTarget,
+    aimDir: state.draftAimDir || state.snapshot.you.lastAimDir
+  });
+  pushMessage("Plan updated.");
+  state.inputStep = "move";
+}
+
+function beginPlanDrag(point, pointerType) {
+  if (!state.snapshot?.you.alive || state.snapshot.room.phase !== "planning") {
+    return false;
+  }
+  const mode = state.inputStep;
+  const updated = updatePlanDraftFromScreenPoint(point, mode);
+  if (!updated) {
+    return false;
+  }
+  state.dragPlan.active = true;
+  state.dragPlan.mode = mode;
+  state.dragPlan.pointerType = pointerType;
+  return true;
+}
+
+function updatePlanDrag(point) {
+  if (!state.dragPlan.active) {
+    return;
+  }
+  updatePlanDraftFromScreenPoint(point, state.dragPlan.mode);
+}
+
+async function endPlanDrag() {
+  if (!state.dragPlan.active) {
+    return;
+  }
+  const mode = state.dragPlan.mode;
+  state.dragPlan.active = false;
+  state.dragPlan.mode = "";
+  state.dragPlan.pointerType = "";
+  try {
+    await commitCurrentDraft(mode);
+  } catch (error) {
+    pushMessage(error.message);
+  }
 }
 
 async function savePlan(plan) {
@@ -956,23 +1085,46 @@ canvas.addEventListener("pointerdown", async (event) => {
     return;
   }
   const point = getCanvasPoint(event);
-  await handleScreenPointInput(point);
+  beginPlanDrag(point, "mouse");
 });
 
 canvas.addEventListener(
-  "touchend",
-  async (event) => {
+  "touchstart",
+  (event) => {
     sounds.unlock();
     if (!state.snapshot?.match?.active || !state.snapshot.you.alive) {
       return;
     }
-    const touch = event.changedTouches && event.changedTouches[0];
+    const touch = event.touches && event.touches[0];
     if (!touch) {
       return;
     }
     event.preventDefault();
     const rect = canvas.getBoundingClientRect();
-    await handleScreenPointInput({
+    beginPlanDrag(
+      {
+        x: touch.clientX - rect.left,
+        y: touch.clientY - rect.top
+      },
+      "touch"
+    );
+  },
+  { passive: false }
+);
+
+canvas.addEventListener(
+  "touchmove",
+  (event) => {
+    if (!state.dragPlan.active || state.dragPlan.pointerType !== "touch") {
+      return;
+    }
+    const touch = event.touches && event.touches[0];
+    if (!touch) {
+      return;
+    }
+    event.preventDefault();
+    const rect = canvas.getBoundingClientRect();
+    updatePlanDrag({
       x: touch.clientX - rect.left,
       y: touch.clientY - rect.top
     });
@@ -980,8 +1132,30 @@ canvas.addEventListener(
   { passive: false }
 );
 
+canvas.addEventListener(
+  "touchend",
+  async (event) => {
+    if (!state.dragPlan.active || state.dragPlan.pointerType !== "touch") {
+      return;
+    }
+    event.preventDefault();
+    await endPlanDrag();
+  },
+  { passive: false }
+);
+
 window.addEventListener("pointermove", (event) => {
-  if (!state.snapshot?.match?.active || !state.dragCamera.active) {
+  if (!state.snapshot?.match?.active) {
+    return;
+  }
+  if (state.dragPlan.active && state.dragPlan.pointerType === "mouse") {
+    const rect = canvas.getBoundingClientRect();
+    updatePlanDrag({
+      x: event.clientX - rect.left,
+      y: event.clientY - rect.top
+    });
+  }
+  if (!state.dragCamera.active) {
     return;
   }
   const dx = (event.clientX - state.dragCamera.startX) / state.camera.zoom;
@@ -992,10 +1166,16 @@ window.addEventListener("pointermove", (event) => {
 
 window.addEventListener("pointercancel", () => {
   state.dragCamera.active = false;
+  state.dragPlan.active = false;
+  state.dragPlan.mode = "";
+  state.dragPlan.pointerType = "";
 });
 
-window.addEventListener("pointerup", () => {
+window.addEventListener("pointerup", async () => {
   state.dragCamera.active = false;
+  if (state.dragPlan.active && state.dragPlan.pointerType === "mouse") {
+    await endPlanDrag();
+  }
 });
 
 window.addEventListener("wheel", (event) => {
