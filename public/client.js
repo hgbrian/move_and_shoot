@@ -19,6 +19,7 @@ const ui = {
   scoreLabel: document.getElementById("score-label"),
   playersLabel: document.getElementById("players-label"),
   startGameButton: document.getElementById("start-game-button"),
+  startTestButton: document.getElementById("start-test-button"),
   topActionSlot: document.getElementById("top-action-slot")
 };
 
@@ -31,9 +32,10 @@ const state = {
   lastPerfNowMs: 0,
   pollTimer: null,
   animationFrame: 0,
+  inputStep: "move",
   draftMoveTarget: null,
   draftAimDir: { x: 0, y: -1 },
-  messageLog: ["Press and drag to set move target and aim direction."],
+  messageLog: ["Drag to set your move target, release to commit. Then drag again to aim."],
   lastPhase: "",
   lastRoundSummaryKey: "",
   lastMatchSummaryKey: "",
@@ -48,8 +50,8 @@ const state = {
   },
   dragPlan: {
     active: false,
-    pointerType: "",
-    startWorld: null
+    mode: "",
+    pointerType: ""
   },
   camera: {
     x: 0,
@@ -195,6 +197,266 @@ function lerpPoint(a, b, t) {
   return { x: lerp(a.x, b.x, t), y: lerp(a.y, b.y, t) };
 }
 
+const NAV_CELL_SIZE = 14;
+const navCache = { mapKey: "", nav: null, buildings: null };
+
+function buildingMetrics(building) {
+  return {
+    x: building.x,
+    y: building.y,
+    halfWidth: building.width / 2,
+    halfHeight: building.height / 2,
+    angleRad: (building.angleDeg * Math.PI) / 180
+  };
+}
+
+function rotateIntoLocalClient(point, building) {
+  const dx = point.x - building.x;
+  const dy = point.y - building.y;
+  const cos = Math.cos(-building.angleRad);
+  const sin = Math.sin(-building.angleRad);
+  return { x: dx * cos - dy * sin, y: dx * sin + dy * cos };
+}
+
+function pointBlockedByBuildingClient(point, radius, buildings) {
+  const radiusSq = radius * radius;
+  for (const building of buildings) {
+    const local = rotateIntoLocalClient(point, building);
+    const dx = local.x - clamp(local.x, -building.halfWidth, building.halfWidth);
+    const dy = local.y - clamp(local.y, -building.halfHeight, building.halfHeight);
+    if (dx * dx + dy * dy < radiusSq) return true;
+  }
+  return false;
+}
+
+function insideWorldClient(point, radius, map) {
+  return (
+    point.x >= radius &&
+    point.x <= map.width - radius &&
+    point.y >= radius &&
+    point.y <= map.height - radius
+  );
+}
+
+function segmentClearForCircleClient(start, end, radius, map, buildings) {
+  if (!insideWorldClient(end, radius, map) || pointBlockedByBuildingClient(end, radius, buildings)) {
+    return false;
+  }
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const length = Math.hypot(dx, dy);
+  const samples = Math.max(1, Math.ceil(length / Math.max(radius * 0.5, 1)));
+  for (let i = 1; i < samples; i += 1) {
+    const t = i / samples;
+    const probe = { x: start.x + dx * t, y: start.y + dy * t };
+    if (!insideWorldClient(probe, radius, map) || pointBlockedByBuildingClient(probe, radius, buildings)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function buildNavGridClient(map, radius) {
+  const cellSize = NAV_CELL_SIZE;
+  const cols = Math.ceil(map.width / cellSize);
+  const rows = Math.ceil(map.height / cellSize);
+  const walkable = new Uint8Array(cols * rows);
+  const buildings = map.buildings.map(buildingMetrics);
+  for (let cy = 0; cy < rows; cy += 1) {
+    for (let cx = 0; cx < cols; cx += 1) {
+      const center = { x: cx * cellSize + cellSize / 2, y: cy * cellSize + cellSize / 2 };
+      const ok = insideWorldClient(center, radius, map) && !pointBlockedByBuildingClient(center, radius, buildings);
+      walkable[cy * cols + cx] = ok ? 1 : 0;
+    }
+  }
+  return { cellSize, cols, rows, walkable, buildings };
+}
+
+function getClientNav(map) {
+  const key = `${map.width}x${map.height}:${map.buildings.length}`;
+  if (navCache.mapKey !== key) {
+    navCache.mapKey = key;
+    navCache.nav = buildNavGridClient(map, state.snapshot.config.playerRadius);
+  }
+  return navCache.nav;
+}
+
+function nearestWalkableCellClient(nav, point) {
+  const cx0 = clamp(Math.floor(point.x / nav.cellSize), 0, nav.cols - 1);
+  const cy0 = clamp(Math.floor(point.y / nav.cellSize), 0, nav.rows - 1);
+  if (nav.walkable[cy0 * nav.cols + cx0]) return { cx: cx0, cy: cy0 };
+  const visited = new Uint8Array(nav.walkable.length);
+  visited[cy0 * nav.cols + cx0] = 1;
+  let frontier = [[cx0, cy0]];
+  for (let ring = 0; ring < 80 && frontier.length; ring += 1) {
+    const next = [];
+    for (const [x, y] of frontier) {
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const nx = x + dx;
+        const ny = y + dy;
+        if (nx < 0 || ny < 0 || nx >= nav.cols || ny >= nav.rows) continue;
+        const key = ny * nav.cols + nx;
+        if (visited[key]) continue;
+        visited[key] = 1;
+        if (nav.walkable[key]) return { cx: nx, cy: ny };
+        next.push([nx, ny]);
+      }
+    }
+    frontier = next;
+  }
+  return null;
+}
+
+class ClientMinHeap {
+  constructor() { this.items = []; }
+  get size() { return this.items.length; }
+  push(item) { this.items.push(item); this._up(this.items.length - 1); }
+  pop() {
+    const top = this.items[0];
+    const last = this.items.pop();
+    if (this.items.length) { this.items[0] = last; this._down(0); }
+    return top;
+  }
+  _up(i) {
+    while (i > 0) {
+      const p = (i - 1) >> 1;
+      if (this.items[p][0] <= this.items[i][0]) break;
+      const t = this.items[p]; this.items[p] = this.items[i]; this.items[i] = t;
+      i = p;
+    }
+  }
+  _down(i) {
+    const n = this.items.length;
+    while (true) {
+      const l = 2 * i + 1, r = 2 * i + 2;
+      let b = i;
+      if (l < n && this.items[l][0] < this.items[b][0]) b = l;
+      if (r < n && this.items[r][0] < this.items[b][0]) b = r;
+      if (b === i) break;
+      const t = this.items[b]; this.items[b] = this.items[i]; this.items[i] = t;
+      i = b;
+    }
+  }
+}
+
+function findPathClient(map, startWorld, endWorld, radius) {
+  const nav = getClientNav(map);
+  const startCell = nearestWalkableCellClient(nav, startWorld);
+  const endCell = nearestWalkableCellClient(nav, endWorld);
+  if (!startCell || !endCell) return null;
+  const cols = nav.cols;
+  const rows = nav.rows;
+  const startIdx = startCell.cy * cols + startCell.cx;
+  const endIdx = endCell.cy * cols + endCell.cx;
+  if (startIdx === endIdx) return [{ x: startWorld.x, y: startWorld.y }, { x: endWorld.x, y: endWorld.y }];
+
+  const gScore = new Float64Array(nav.walkable.length);
+  for (let i = 0; i < gScore.length; i += 1) gScore[i] = Infinity;
+  gScore[startIdx] = 0;
+  const cameFrom = new Int32Array(nav.walkable.length);
+  cameFrom.fill(-1);
+  const closed = new Uint8Array(nav.walkable.length);
+
+  const heuristic = (cx, cy) => {
+    const dx = Math.abs(cx - endCell.cx);
+    const dy = Math.abs(cy - endCell.cy);
+    return Math.max(dx, dy) + (Math.SQRT2 - 1) * Math.min(dx, dy);
+  };
+
+  const heap = new ClientMinHeap();
+  heap.push([heuristic(startCell.cx, startCell.cy), startIdx]);
+  const dirs = [
+    [1, 0, 1], [-1, 0, 1], [0, 1, 1], [0, -1, 1],
+    [1, 1, Math.SQRT2], [1, -1, Math.SQRT2], [-1, 1, Math.SQRT2], [-1, -1, Math.SQRT2]
+  ];
+
+  while (heap.size) {
+    const [, curIdx] = heap.pop();
+    if (closed[curIdx]) continue;
+    closed[curIdx] = 1;
+    if (curIdx === endIdx) break;
+    const cx = curIdx % cols;
+    const cy = (curIdx - cx) / cols;
+    const curG = gScore[curIdx];
+    for (const [dx, dy, cost] of dirs) {
+      const nx = cx + dx, ny = cy + dy;
+      if (nx < 0 || ny < 0 || nx >= cols || ny >= rows) continue;
+      const nIdx = ny * cols + nx;
+      if (!nav.walkable[nIdx] || closed[nIdx]) continue;
+      if (dx !== 0 && dy !== 0) {
+        if (!nav.walkable[cy * cols + nx] || !nav.walkable[ny * cols + cx]) continue;
+      }
+      const tentativeG = curG + cost;
+      if (tentativeG < gScore[nIdx]) {
+        gScore[nIdx] = tentativeG;
+        cameFrom[nIdx] = curIdx;
+        heap.push([tentativeG + heuristic(nx, ny), nIdx]);
+      }
+    }
+  }
+
+  if (!closed[endIdx]) return null;
+
+  const rawPath = [];
+  let at = endIdx;
+  while (at !== -1) {
+    const cx = at % cols;
+    const cy = (at - cx) / cols;
+    rawPath.push({ x: cx * nav.cellSize + nav.cellSize / 2, y: cy * nav.cellSize + nav.cellSize / 2 });
+    at = cameFrom[at];
+  }
+  rawPath.reverse();
+  rawPath[0] = { x: startWorld.x, y: startWorld.y };
+  rawPath[rawPath.length - 1] = { x: endWorld.x, y: endWorld.y };
+
+  const smoothed = [rawPath[0]];
+  let anchor = 0;
+  for (let i = 2; i < rawPath.length; i += 1) {
+    if (!segmentClearForCircleClient(rawPath[anchor], rawPath[i], radius, map, nav.buildings)) {
+      smoothed.push(rawPath[i - 1]);
+      anchor = i - 1;
+    }
+  }
+  smoothed.push(rawPath[rawPath.length - 1]);
+  return smoothed;
+}
+
+function clampPathToLengthClient(path, maxLength) {
+  if (path.length < 2 || maxLength <= 0) {
+    return path.length ? [{ x: path[0].x, y: path[0].y }] : [];
+  }
+  const result = [{ x: path[0].x, y: path[0].y }];
+  let acc = 0;
+  for (let i = 1; i < path.length; i += 1) {
+    const a = path[i - 1], b = path[i];
+    const segDist = Math.hypot(b.x - a.x, b.y - a.y);
+    if (acc + segDist >= maxLength) {
+      const remaining = maxLength - acc;
+      const t = segDist > 0 ? remaining / segDist : 0;
+      result.push({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
+      return result;
+    }
+    result.push({ x: b.x, y: b.y });
+    acc += segDist;
+  }
+  return result;
+}
+
+const pathCache = { key: "", path: null };
+
+function planPreviewPath(startWorld, endWorld) {
+  if (!state.snapshot?.match?.map || !state.snapshot?.config) return null;
+  const key = `${navCache.mapKey}|${startWorld.x.toFixed(1)},${startWorld.y.toFixed(1)}|${endWorld.x.toFixed(1)},${endWorld.y.toFixed(1)}`;
+  if (pathCache.key === key) return pathCache.path;
+  const map = state.snapshot.match.map;
+  const radius = state.snapshot.config.playerRadius;
+  const full = findPathClient(map, startWorld, endWorld, radius);
+  const path = (full && full.length >= 2) ? clampPathToLengthClient(full, state.snapshot.config.moveRange) : null;
+  pathCache.key = key;
+  pathCache.path = path;
+  return path;
+}
+
 function byId(id) {
   return state.snapshot?.players.find((entry) => entry.id === id) || null;
 }
@@ -217,7 +479,12 @@ function visiblePlayers() {
   if (!state.snapshot) {
     return [];
   }
-  return state.snapshot.players.filter((player) => player.visibleToYou || player.id === state.snapshot.you.id);
+  return state.snapshot.players.filter((player) => {
+    if (player.disconnected) {
+      return false;
+    }
+    return player.visibleToYou || player.id === state.snapshot.you.id;
+  });
 }
 
 function getAnimatedPlayerPosition(player) {
@@ -505,6 +772,7 @@ function handleSnapshot(snapshot) {
 
   if (planningKey !== state.lastPlanningKey) {
     state.lastPlanningKey = planningKey;
+    state.inputStep = "move";
     state.draftMoveTarget = snapshot.planning?.plan?.moveTarget || null;
     state.draftAimDir = snapshot.planning?.plan?.aimDir || snapshot.you.lastAimDir || { x: 0, y: -1 };
   }
@@ -629,20 +897,30 @@ function drawMoveAndAimPreview() {
   const moveTarget = state.draftMoveTarget || state.snapshot.planning?.plan?.moveTarget;
   const aimDir = state.draftAimDir || state.snapshot.planning?.plan?.aimDir || state.snapshot.you.lastAimDir;
   if (moveTarget) {
-    const startScreen = worldToScreen(start);
-    const endScreen = worldToScreen(moveTarget);
+    const path = planPreviewPath(start, moveTarget) || [start, moveTarget];
     ctx.strokeStyle = "rgba(45, 106, 79, 0.92)";
     ctx.lineWidth = 3;
     ctx.setLineDash([10, 8]);
     ctx.beginPath();
-    ctx.moveTo(startScreen.x, startScreen.y);
-    ctx.lineTo(endScreen.x, endScreen.y);
+    const first = worldToScreen(path[0]);
+    ctx.moveTo(first.x, first.y);
+    for (let i = 1; i < path.length; i += 1) {
+      const p = worldToScreen(path[i]);
+      ctx.lineTo(p.x, p.y);
+    }
     ctx.stroke();
     ctx.setLineDash([]);
 
+    const pathEnd = path[path.length - 1];
+    const endScreen = worldToScreen(pathEnd);
+    ctx.fillStyle = "rgba(45, 106, 79, 0.85)";
+    ctx.beginPath();
+    ctx.arc(endScreen.x, endScreen.y, 6, 0, Math.PI * 2);
+    ctx.fill();
+
     const aimEnd = {
-      x: moveTarget.x + aimDir.x * 260,
-      y: moveTarget.y + aimDir.y * 260
+      x: pathEnd.x + aimDir.x * 260,
+      y: pathEnd.y + aimDir.y * 260
     };
     const aimScreen = worldToScreen(aimEnd);
     ctx.strokeStyle = "rgba(162, 62, 47, 0.94)";
@@ -809,7 +1087,7 @@ function drawOverlayText() {
   ctx.textAlign = "center";
   if (state.snapshot.room.phase === "planning") {
     ctx.fillText(
-      "Press to set move target, drag to aim",
+      state.inputStep === "move" ? "Drag to set move target" : "Drag to set aim direction",
       viewport.centerX,
       viewport.bottom + 26
     );
@@ -899,61 +1177,85 @@ function pointInsidePlayArea(point) {
   );
 }
 
-const AIM_DRAG_THRESHOLD = 16;
-
-function beginPlanDrag(point, pointerType) {
-  if (!state.snapshot?.match?.active || !state.snapshot.you.alive) {
-    return false;
-  }
-  if (state.snapshot.room.phase !== "planning" || !pointInsidePlayArea(point)) {
+function updatePlanDraftFromScreenPoint(point, mode) {
+  if (!state.snapshot?.match?.active || !state.snapshot.you.alive || !pointInsidePlayArea(point)) {
     return false;
   }
   const world = screenToWorld(point);
-  state.dragPlan.active = true;
-  state.dragPlan.pointerType = pointerType;
-  state.dragPlan.startWorld = world;
-  state.draftMoveTarget = clampMoveTarget(world);
-  if (!state.draftAimDir) {
-    state.draftAimDir =
-      state.snapshot.planning?.plan?.aimDir ||
-      state.snapshot.you.lastAimDir ||
-      { x: 0, y: -1 };
+  if (mode === "move") {
+    state.draftMoveTarget = clampMoveTarget(world);
+    return true;
   }
+
+  const you = byId(state.snapshot.you.id) || state.snapshot.you;
+  const origin = state.draftMoveTarget || state.snapshot.planning?.plan?.moveTarget || { x: you.x, y: you.y };
+  const delta = { x: world.x - origin.x, y: world.y - origin.y };
+  if (Math.hypot(delta.x, delta.y) < 4) {
+    return true;
+  }
+  state.draftAimDir = normalize(delta, state.snapshot.you.lastAimDir);
+  return true;
+}
+
+async function commitCurrentDraft(mode) {
+  if (!state.snapshot?.you.alive || state.snapshot.room.phase !== "planning") {
+    return;
+  }
+  const you = byId(state.snapshot.you.id) || state.snapshot.you;
+  if (mode === "move") {
+    const moveTarget = state.draftMoveTarget || { x: you.x, y: you.y };
+    await savePlan({
+      moveTarget,
+      aimDir: state.draftAimDir || state.snapshot.planning?.plan?.aimDir || state.snapshot.you.lastAimDir
+    });
+    pushMessage("Move target set. Drag again to aim.");
+    state.inputStep = "aim";
+    return;
+  }
+  const moveTarget =
+    state.draftMoveTarget ||
+    state.snapshot.planning?.plan?.moveTarget ||
+    { x: you.x, y: you.y };
+  await savePlan({
+    moveTarget,
+    aimDir: state.draftAimDir || state.snapshot.you.lastAimDir
+  });
+  pushMessage("Plan updated.");
+  state.inputStep = "move";
+}
+
+function beginPlanDrag(point, pointerType) {
+  if (!state.snapshot?.you.alive || state.snapshot.room.phase !== "planning") {
+    return false;
+  }
+  const mode = state.inputStep;
+  const updated = updatePlanDraftFromScreenPoint(point, mode);
+  if (!updated) {
+    return false;
+  }
+  state.dragPlan.active = true;
+  state.dragPlan.mode = mode;
+  state.dragPlan.pointerType = pointerType;
   return true;
 }
 
 function updatePlanDrag(point) {
-  if (!state.dragPlan.active || !state.dragPlan.startWorld) {
+  if (!state.dragPlan.active) {
     return;
   }
-  const world = screenToWorld(point);
-  const dx = world.x - state.dragPlan.startWorld.x;
-  const dy = world.y - state.dragPlan.startWorld.y;
-  if (Math.hypot(dx, dy) > AIM_DRAG_THRESHOLD) {
-    state.draftAimDir = normalize({ x: dx, y: dy }, state.draftAimDir);
-  }
+  updatePlanDraftFromScreenPoint(point, state.dragPlan.mode);
 }
 
 async function endPlanDrag() {
   if (!state.dragPlan.active) {
     return;
   }
+  const mode = state.dragPlan.mode;
   state.dragPlan.active = false;
+  state.dragPlan.mode = "";
   state.dragPlan.pointerType = "";
-  state.dragPlan.startWorld = null;
-  if (!state.snapshot?.you.alive || state.snapshot.room.phase !== "planning") {
-    return;
-  }
-  const you = byId(state.snapshot.you.id) || state.snapshot.you;
-  const moveTarget = state.draftMoveTarget || { x: you.x, y: you.y };
-  const aimDir =
-    state.draftAimDir ||
-    state.snapshot.planning?.plan?.aimDir ||
-    state.snapshot.you.lastAimDir ||
-    { x: 0, y: -1 };
   try {
-    await savePlan({ moveTarget, aimDir });
-    pushMessage("Plan updated.");
+    await commitCurrentDraft(mode);
   } catch (error) {
     pushMessage(error.message);
   }
@@ -973,33 +1275,28 @@ async function savePlan(plan) {
   });
 }
 
-async function startGame() {
+async function startGame(options = {}) {
   if (!state.token) {
     return;
   }
   await api("/api/start", {
     method: "POST",
     body: {
-      token: state.token
+      token: state.token,
+      testMode: !!options.testMode
     }
   });
 }
 
 function clampMoveTarget(worldPoint) {
-  const you = byId(state.snapshot.you.id) || state.snapshot.you;
-  const dx = worldPoint.x - you.x;
-  const dy = worldPoint.y - you.y;
-  const distance = Math.hypot(dx, dy);
-  if (!distance) {
-    return { x: you.x, y: you.y };
+  if (!state.snapshot?.match?.map) {
+    return { x: worldPoint.x, y: worldPoint.y };
   }
-  if (distance <= state.snapshot.config.moveRange) {
-    return worldPoint;
-  }
-  const dir = normalize({ x: dx, y: dy });
+  const map = state.snapshot.match.map;
+  const radius = state.snapshot.config.playerRadius;
   return {
-    x: you.x + dir.x * state.snapshot.config.moveRange,
-    y: you.y + dir.y * state.snapshot.config.moveRange
+    x: clamp(worldPoint.x, radius, map.width - radius),
+    y: clamp(worldPoint.y, radius, map.height - radius)
   };
 }
 
@@ -1106,8 +1403,8 @@ window.addEventListener("pointermove", (event) => {
 window.addEventListener("pointercancel", () => {
   state.dragCamera.active = false;
   state.dragPlan.active = false;
+  state.dragPlan.mode = "";
   state.dragPlan.pointerType = "";
-  state.dragPlan.startWorld = null;
 });
 
 window.addEventListener("pointerup", async () => {
@@ -1175,6 +1472,16 @@ ui.startGameButton.addEventListener("click", async () => {
   try {
     await startGame();
     pushMessage("Host started the match countdown.");
+  } catch (error) {
+    pushMessage(error.message);
+  }
+});
+
+ui.startTestButton.addEventListener("click", async () => {
+  sounds.unlock();
+  try {
+    await startGame({ testMode: true });
+    pushMessage("Test mode (1P) starting...");
   } catch (error) {
     pushMessage(error.message);
   }

@@ -361,35 +361,34 @@ function moveCircleWithSliding(current, delta, radius, map) {
     return { x: current.x, y: current.y };
   }
 
-  const totalDistance = Math.hypot(delta.x, delta.y);
-  const substeps = Math.max(1, Math.ceil(totalDistance / 4));
-  const stepDelta = scale(delta, 1 / substeps);
-  const skin = 1.25;
   let position = { x: current.x, y: current.y };
+  let remaining = { x: delta.x, y: delta.y };
 
-  for (let stepIndex = 0; stepIndex < substeps; stepIndex += 1) {
-    const desired = { x: stepDelta.x, y: stepDelta.y };
-    const directCandidate = add(position, desired);
-    if (
-      pointClearForCircle(directCandidate, radius, map) &&
-      segmentClearForCircle(position, directCandidate, radius, map)
-    ) {
-      position = directCandidate;
-      continue;
+  for (let iter = 0; iter < 6; iter += 1) {
+    const remDist = Math.hypot(remaining.x, remaining.y);
+    if (remDist < 1e-4) {
+      break;
     }
 
-    const advanced = furthestClearPointAlongDelta(position, desired, radius, map);
+    const advanced = furthestClearPointAlongDelta(position, remaining, radius, map);
     const advancedDelta = subtract(advanced, position);
-    const remainder = subtract(desired, advancedDelta);
+    const advancedDist = Math.hypot(advancedDelta.x, advancedDelta.y);
     position = advanced;
-    if (Math.hypot(remainder.x, remainder.y) < 1e-4) {
-      continue;
+
+    if (advancedDist >= remDist - 1e-4) {
+      break;
     }
 
-    const blockedProbe = add(position, remainder);
-    const normals = collisionNormalsAtPoint(blockedProbe, radius, map);
+    const remainder = subtract(remaining, advancedDelta);
+    const remainderDist = Math.hypot(remainder.x, remainder.y);
+    const probeStep = Math.min(remainderDist, Math.max(radius * 0.25, 0.5));
+    const probe = {
+      x: position.x + (remainder.x / remainderDist) * probeStep,
+      y: position.y + (remainder.y / remainderDist) * probeStep
+    };
+    const normals = collisionNormalsAtPoint(probe, radius, map);
     if (!normals.length) {
-      continue;
+      break;
     }
 
     let collisionNormal = normals[0];
@@ -402,24 +401,251 @@ function moveCircleWithSliding(current, delta, radius, map) {
       }
     }
 
-    const intoWall = dot(remainder, collisionNormal);
-    if (intoWall >= 0) {
-      continue;
+    if (strongestIntoWall >= 0) {
+      break;
     }
 
-    const separated = furthestClearPointAlongDelta(position, scale(collisionNormal, skin), radius, map);
-    position = separated;
-
-    const slide = subtract(remainder, scale(collisionNormal, intoWall));
-    if (Math.hypot(slide.x, slide.y) < 1e-4) {
-      continue;
-    }
-
-    const slid = furthestClearPointAlongDelta(position, slide, radius, map);
-    position = slid;
+    remaining = subtract(remainder, scale(collisionNormal, strongestIntoWall));
   }
 
   return position;
+}
+
+const NAV_CELL_SIZE = 14;
+
+function buildNavGrid(map, radius) {
+  const cellSize = NAV_CELL_SIZE;
+  const cols = Math.ceil(map.width / cellSize);
+  const rows = Math.ceil(map.height / cellSize);
+  const walkable = new Uint8Array(cols * rows);
+  for (let cy = 0; cy < rows; cy += 1) {
+    for (let cx = 0; cx < cols; cx += 1) {
+      const center = {
+        x: cx * cellSize + cellSize / 2,
+        y: cy * cellSize + cellSize / 2
+      };
+      const ok = insideWorld(center, radius, map) && !pointBlockedByBuilding(center, radius, map);
+      walkable[cy * cols + cx] = ok ? 1 : 0;
+    }
+  }
+  return { cellSize, cols, rows, walkable };
+}
+
+function getNavGrid(map) {
+  if (!map._nav) {
+    map._nav = buildNavGrid(map, CONFIG.playerRadius);
+  }
+  return map._nav;
+}
+
+function nearestWalkableCell(nav, point) {
+  const cx0 = clamp(Math.floor(point.x / nav.cellSize), 0, nav.cols - 1);
+  const cy0 = clamp(Math.floor(point.y / nav.cellSize), 0, nav.rows - 1);
+  if (nav.walkable[cy0 * nav.cols + cx0]) {
+    return { cx: cx0, cy: cy0 };
+  }
+  const visited = new Uint8Array(nav.walkable.length);
+  visited[cy0 * nav.cols + cx0] = 1;
+  let frontier = [[cx0, cy0]];
+  for (let ring = 0; ring < 80 && frontier.length; ring += 1) {
+    const next = [];
+    for (const [x, y] of frontier) {
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const nx = x + dx;
+        const ny = y + dy;
+        if (nx < 0 || ny < 0 || nx >= nav.cols || ny >= nav.rows) continue;
+        const key = ny * nav.cols + nx;
+        if (visited[key]) continue;
+        visited[key] = 1;
+        if (nav.walkable[key]) return { cx: nx, cy: ny };
+        next.push([nx, ny]);
+      }
+    }
+    frontier = next;
+  }
+  return null;
+}
+
+class MinHeap {
+  constructor() { this.items = []; }
+  get size() { return this.items.length; }
+  push(item) {
+    this.items.push(item);
+    this._up(this.items.length - 1);
+  }
+  pop() {
+    const top = this.items[0];
+    const last = this.items.pop();
+    if (this.items.length) {
+      this.items[0] = last;
+      this._down(0);
+    }
+    return top;
+  }
+  _up(i) {
+    while (i > 0) {
+      const parent = (i - 1) >> 1;
+      if (this.items[parent][0] <= this.items[i][0]) break;
+      const tmp = this.items[parent];
+      this.items[parent] = this.items[i];
+      this.items[i] = tmp;
+      i = parent;
+    }
+  }
+  _down(i) {
+    const n = this.items.length;
+    while (true) {
+      const l = 2 * i + 1;
+      const r = 2 * i + 2;
+      let best = i;
+      if (l < n && this.items[l][0] < this.items[best][0]) best = l;
+      if (r < n && this.items[r][0] < this.items[best][0]) best = r;
+      if (best === i) break;
+      const tmp = this.items[best];
+      this.items[best] = this.items[i];
+      this.items[i] = tmp;
+      i = best;
+    }
+  }
+}
+
+function findPath(map, startWorld, endWorld, radius) {
+  const nav = getNavGrid(map);
+  const startCell = nearestWalkableCell(nav, startWorld);
+  const endCell = nearestWalkableCell(nav, endWorld);
+  if (!startCell || !endCell) return null;
+  const cols = nav.cols;
+  const rows = nav.rows;
+  const startIdx = startCell.cy * cols + startCell.cx;
+  const endIdx = endCell.cy * cols + endCell.cx;
+  if (startIdx === endIdx) {
+    return [{ x: startWorld.x, y: startWorld.y }, { x: endWorld.x, y: endWorld.y }];
+  }
+
+  const gScore = new Float64Array(nav.walkable.length);
+  for (let i = 0; i < gScore.length; i += 1) gScore[i] = Infinity;
+  gScore[startIdx] = 0;
+  const cameFrom = new Int32Array(nav.walkable.length);
+  cameFrom.fill(-1);
+  const closed = new Uint8Array(nav.walkable.length);
+
+  const heuristic = (cx, cy) => {
+    const dx = Math.abs(cx - endCell.cx);
+    const dy = Math.abs(cy - endCell.cy);
+    return Math.max(dx, dy) + (Math.SQRT2 - 1) * Math.min(dx, dy);
+  };
+
+  const heap = new MinHeap();
+  heap.push([heuristic(startCell.cx, startCell.cy), startIdx]);
+
+  const dirs = [
+    [1, 0, 1], [-1, 0, 1], [0, 1, 1], [0, -1, 1],
+    [1, 1, Math.SQRT2], [1, -1, Math.SQRT2], [-1, 1, Math.SQRT2], [-1, -1, Math.SQRT2]
+  ];
+
+  while (heap.size) {
+    const [, curIdx] = heap.pop();
+    if (closed[curIdx]) continue;
+    closed[curIdx] = 1;
+    if (curIdx === endIdx) break;
+    const cx = curIdx % cols;
+    const cy = (curIdx - cx) / cols;
+    const curG = gScore[curIdx];
+    for (const [dx, dy, cost] of dirs) {
+      const nx = cx + dx;
+      const ny = cy + dy;
+      if (nx < 0 || ny < 0 || nx >= cols || ny >= rows) continue;
+      const nIdx = ny * cols + nx;
+      if (!nav.walkable[nIdx] || closed[nIdx]) continue;
+      if (dx !== 0 && dy !== 0) {
+        if (!nav.walkable[cy * cols + nx] || !nav.walkable[ny * cols + cx]) continue;
+      }
+      const tentativeG = curG + cost;
+      if (tentativeG < gScore[nIdx]) {
+        gScore[nIdx] = tentativeG;
+        cameFrom[nIdx] = curIdx;
+        heap.push([tentativeG + heuristic(nx, ny), nIdx]);
+      }
+    }
+  }
+
+  if (!closed[endIdx]) return null;
+
+  const rawPath = [];
+  let at = endIdx;
+  while (at !== -1) {
+    const cx = at % cols;
+    const cy = (at - cx) / cols;
+    rawPath.push({
+      x: cx * nav.cellSize + nav.cellSize / 2,
+      y: cy * nav.cellSize + nav.cellSize / 2
+    });
+    at = cameFrom[at];
+  }
+  rawPath.reverse();
+
+  rawPath[0] = { x: startWorld.x, y: startWorld.y };
+  rawPath[rawPath.length - 1] = { x: endWorld.x, y: endWorld.y };
+
+  const smoothed = [rawPath[0]];
+  let anchorIdx = 0;
+  for (let i = 2; i < rawPath.length; i += 1) {
+    if (!segmentClearForCircle(rawPath[anchorIdx], rawPath[i], radius, map)) {
+      smoothed.push(rawPath[i - 1]);
+      anchorIdx = i - 1;
+    }
+  }
+  smoothed.push(rawPath[rawPath.length - 1]);
+  return smoothed;
+}
+
+function pathLength(path) {
+  let len = 0;
+  for (let i = 1; i < path.length; i += 1) {
+    len += distance(path[i - 1], path[i]);
+  }
+  return len;
+}
+
+function clampPathToLength(path, maxLength) {
+  if (path.length < 2 || maxLength <= 0) {
+    return path.length ? [{ x: path[0].x, y: path[0].y }] : [];
+  }
+  const result = [{ x: path[0].x, y: path[0].y }];
+  let acc = 0;
+  for (let i = 1; i < path.length; i += 1) {
+    const a = path[i - 1];
+    const b = path[i];
+    const segDist = distance(a, b);
+    if (acc + segDist >= maxLength) {
+      const remaining = maxLength - acc;
+      const t = segDist > 0 ? remaining / segDist : 0;
+      result.push({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
+      return result;
+    }
+    result.push({ x: b.x, y: b.y });
+    acc += segDist;
+  }
+  return result;
+}
+
+function pointAtDistanceAlongPath(path, targetDistance) {
+  if (!path.length) return { x: 0, y: 0 };
+  if (targetDistance <= 0 || path.length === 1) {
+    return { x: path[0].x, y: path[0].y };
+  }
+  let acc = 0;
+  for (let i = 1; i < path.length; i += 1) {
+    const a = path[i - 1];
+    const b = path[i];
+    const segDist = Math.hypot(b.x - a.x, b.y - a.y);
+    if (acc + segDist >= targetDistance) {
+      const t = segDist > 0 ? (targetDistance - acc) / segDist : 0;
+      return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
+    }
+    acc += segDist;
+  }
+  return { x: path[path.length - 1].x, y: path[path.length - 1].y };
 }
 
 function interpolateMotionEntry(entry, elapsedMs) {
@@ -579,8 +805,14 @@ function segmentClearForCircle(start, end, radius, map) {
   if (pointBlockedByBuilding(end, radius, map)) {
     return false;
   }
-  for (const building of map.buildings) {
-    if (segmentIntersectsExpandedBuilding(start, end, building, radius)) {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const length = Math.hypot(dx, dy);
+  const samples = Math.max(1, Math.ceil(length / Math.max(radius * 0.5, 1)));
+  for (let i = 1; i < samples; i += 1) {
+    const t = i / samples;
+    const probe = { x: start.x + dx * t, y: start.y + dy * t };
+    if (!insideWorld(probe, radius, map) || pointBlockedByBuilding(probe, radius, map)) {
       return false;
     }
   }
@@ -945,7 +1177,8 @@ function beginLobbyCountdown(room) {
 function startMatch(room) {
   ensureHost(room);
   const participants = connectedPlayers(room).slice(0, CONFIG.maxPlayers);
-  if (participants.length < CONFIG.minPlayers) {
+  const minRequired = room.testMode ? 1 : CONFIG.minPlayers;
+  if (participants.length < minRequired) {
     setPhase(room, "lobby", null, "Waiting for players");
     return;
   }
@@ -1040,19 +1273,18 @@ function startPlanning(room) {
 }
 
 function normalizedMoveTarget(player, moveTarget) {
-  const raw = {
+  return {
     x: Number(moveTarget.x),
     y: Number(moveTarget.y)
   };
-  const delta = subtract(raw, player);
-  const length = Math.hypot(delta.x, delta.y);
-  if (!length) {
-    return { x: player.x, y: player.y };
+}
+
+function planMovePath(map, startWorld, endWorld, radius, maxLength) {
+  const full = findPath(map, startWorld, endWorld, radius);
+  if (!full || full.length < 2) {
+    return [{ x: startWorld.x, y: startWorld.y }];
   }
-  const capped = length > CONFIG.moveRange
-    ? add(player, scale(normalizeVector(delta), CONFIG.moveRange))
-    : raw;
-  return capped;
+  return clampPathToLength(full, maxLength);
 }
 
 function simulateMovement(room, actionMap) {
@@ -1080,16 +1312,22 @@ function simulateMovement(room, actionMap) {
     players.map((player) => {
       const action = actionMap[player.id];
       const target = action ? action.moveEnd : { x: player.x, y: player.y };
+      const startPos = { x: player.x, y: player.y };
+      let path = [startPos];
+      let totalPathLength = 0;
+      const wantsMove = player.roundAlive && !player.disconnected && action && distance(player, target) > 1;
+      if (wantsMove) {
+        path = planMovePath(map, startPos, target, radius, CONFIG.moveRange);
+        totalPathLength = pathLength(path);
+      }
       return [
         player.id,
         {
-          current: { x: player.x, y: player.y },
+          current: startPos,
           target,
-          moving:
-            player.roundAlive &&
-            !player.disconnected &&
-            action &&
-            (distance(player, target) > 1),
+          path,
+          totalPathLength,
+          moving: wantsMove && totalPathLength > 1e-3,
           halted: false
         }
       ];
@@ -1100,9 +1338,11 @@ function simulateMovement(room, actionMap) {
     results[playerId].hadAction = true;
   }
 
+  const maxSpeed = CONFIG.moveRange / CONFIG.movementMs;
+
   for (let stepIndex = 0; stepIndex < steps; stepIndex += 1) {
-    const stepT0 = stepIndex / steps;
     const stepT1 = (stepIndex + 1) / steps;
+    const elapsedMs = stepT1 * CONFIG.movementMs;
     const proposed = {};
 
     for (const player of players) {
@@ -1111,20 +1351,8 @@ function simulateMovement(room, actionMap) {
         proposed[player.id] = { ...state.current };
         continue;
       }
-      const totalDistance = distance(results[player.id].start, state.target);
-      const perStep = totalDistance / steps;
-      const remaining = subtract(state.target, state.current);
-      const remainingDist = Math.hypot(remaining.x, remaining.y);
-      if (remainingDist < 1e-4 || perStep < 1e-4) {
-        proposed[player.id] = { ...state.current };
-        continue;
-      }
-      const stepDist = Math.min(remainingDist, perStep);
-      const desiredDelta = {
-        x: (remaining.x / remainingDist) * stepDist,
-        y: (remaining.y / remainingDist) * stepDist
-      };
-      proposed[player.id] = moveCircleWithSliding(state.current, desiredDelta, radius, map);
+      const travel = Math.min(state.totalPathLength, maxSpeed * elapsedMs);
+      proposed[player.id] = pointAtDistanceAlongPath(state.path, travel);
     }
 
     const resolved = resolvePlayerMovementSlides(players, sim, proposed, radius, map);
@@ -1457,7 +1685,8 @@ function updateRoom(room) {
   }
 
   if (room.phase === "lobby_countdown") {
-    if (connectedCount < CONFIG.minPlayers) {
+    const minRequired = room.testMode ? 1 : CONFIG.minPlayers;
+    if (connectedCount < minRequired) {
       setPhase(room, "lobby", null, "Waiting for players");
       return;
     }
@@ -1855,11 +2084,14 @@ async function handleStart(request, response) {
     return;
   }
 
-  if (connectedPlayers(room).length < CONFIG.minPlayers) {
+  const testMode = !!body.testMode;
+  const minRequired = testMode ? 1 : CONFIG.minPlayers;
+  if (connectedPlayers(room).length < minRequired) {
     json(response, 409, { ok: false, error: "At least 2 players are required." });
     return;
   }
 
+  room.testMode = testMode;
   beginLobbyCountdown(room);
   json(response, 200, { ok: true });
 }
