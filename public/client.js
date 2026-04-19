@@ -41,6 +41,7 @@ const state = {
   lastMatchSummaryKey: "",
   lastPlanningKey: "",
   pendingPlanSave: null,
+  finalCommitSent: false,
   isTouch: window.matchMedia("(pointer: coarse)").matches,
   playback: {
     phase: "",
@@ -618,14 +619,14 @@ function ensureCamera() {
       !state.camera.x && !state.camera.y ||
       state.isTouch ||
       state.snapshot.room.phase === "planning" ||
-      state.snapshot.room.phase === "movement"
+      state.snapshot.room.phase === "movement" ||
+      localShotBullet
     ) {
       state.camera.x = desiredX;
       state.camera.y = desiredY;
     } else {
-      const smoothing = localShotBullet ? CAMERA_BULLET_SMOOTHING : CAMERA_FOLLOW_SMOOTHING;
-      state.camera.x = lerp(state.camera.x, desiredX, smoothing);
-      state.camera.y = lerp(state.camera.y, desiredY, smoothing);
+      state.camera.x = lerp(state.camera.x, desiredX, CAMERA_FOLLOW_SMOOTHING);
+      state.camera.y = lerp(state.camera.y, desiredY, CAMERA_FOLLOW_SMOOTHING);
     }
   } else {
     state.camera.zoom = FIXED_CAMERA_ZOOM;
@@ -833,6 +834,16 @@ function handleSnapshot(snapshot) {
     } else {
       state.pendingPlanSave = null;
     }
+    if (remaining !== null && remaining <= 250 && !state.finalCommitSent) {
+      state.finalCommitSent = true;
+      if (state.dragPlan.active) {
+        endPlanDrag();
+      } else {
+        forceCommitCurrentDraft();
+      }
+    }
+  } else if (state.finalCommitSent) {
+    state.finalCommitSent = false;
   }
 
   ensureCamera();
@@ -1279,6 +1290,25 @@ function updatePlanDrag(point) {
   updatePlanDraftFromScreenPoint(point, state.dragPlan.mode);
 }
 
+async function forceCommitCurrentDraft() {
+  if (!state.snapshot?.you.alive || state.snapshot.room.phase !== "planning") return;
+  const you = byId(state.snapshot.you.id) || state.snapshot.you;
+  const moveTarget =
+    state.draftMoveTarget ||
+    state.snapshot.planning?.plan?.moveTarget ||
+    { x: you.x, y: you.y };
+  const aimDir =
+    state.draftAimDir ||
+    state.snapshot.planning?.plan?.aimDir ||
+    state.snapshot.you.lastAimDir ||
+    { x: 0, y: -1 };
+  try {
+    await savePlan({ moveTarget, aimDir });
+  } catch (error) {
+    // silent — best-effort end-of-phase commit
+  }
+}
+
 async function endPlanDrag() {
   if (!state.dragPlan.active) {
     return;
@@ -1413,6 +1443,18 @@ canvas.addEventListener(
   { passive: false }
 );
 
+canvas.addEventListener(
+  "touchcancel",
+  async (event) => {
+    if (!state.dragPlan.active || state.dragPlan.pointerType !== "touch") {
+      return;
+    }
+    event.preventDefault();
+    await endPlanDrag();
+  },
+  { passive: false }
+);
+
 window.addEventListener("pointermove", (event) => {
   if (!state.snapshot?.match?.active) {
     return;
@@ -1433,11 +1475,11 @@ window.addEventListener("pointermove", (event) => {
   state.camera.y = state.dragCamera.originY - dy;
 });
 
-window.addEventListener("pointercancel", () => {
+window.addEventListener("pointercancel", async () => {
   state.dragCamera.active = false;
-  state.dragPlan.active = false;
-  state.dragPlan.mode = "";
-  state.dragPlan.pointerType = "";
+  if (state.dragPlan.active) {
+    await endPlanDrag();
+  }
 });
 
 window.addEventListener("pointerup", async () => {

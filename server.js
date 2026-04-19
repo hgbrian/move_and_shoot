@@ -13,7 +13,8 @@ const CONFIG = {
   totalRounds: 3,
   lobbyCountdownMs: 1_000,
   preRoundCountdownMs: 1_000,
-  planningMs: 4_000,
+  planningMs: 5_000,
+  planningGraceMs: 500,
   movementMs: 2_000,
   roundEndPauseMs: 3_000,
   screenSize: 1200,
@@ -1556,13 +1557,15 @@ function buildBulletEvents(room) {
     }
   }
 
-  const maxDuration = bullets.length
+  const postImpactLingerMs = 600;
+  const maxStop = bullets.length
     ? Math.max(...bullets.map((bullet) => bullet.stopTimeMs))
-    : 350;
+    : 0;
+  const durationMs = Math.max(maxStop + postImpactLingerMs, 800);
 
   return {
     startedAt: nowMs(),
-    durationMs: Math.max(maxDuration, 350),
+    durationMs,
     bullets: bullets.map((bullet) => ({
       id: bullet.id,
       shooterId: bullet.shooterId,
@@ -1721,7 +1724,7 @@ function updateRoom(room) {
     return;
   }
 
-  if (room.phase === "planning" && room.phaseEndsAt && now >= room.phaseEndsAt) {
+  if (room.phase === "planning" && room.phaseEndsAt && now >= room.phaseEndsAt + CONFIG.planningGraceMs) {
     beginMovement(room);
     return;
   }
