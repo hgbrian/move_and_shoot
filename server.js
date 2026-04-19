@@ -326,7 +326,7 @@ function moveCircleWithSliding(current, delta, radius, map) {
   for (let iteration = 0; iteration < 4; iteration += 1) {
     const candidate = add(current, adjustedDelta);
     const normals = collisionNormalsAtPoint(candidate, radius, map);
-    if (!normals.length) {
+    if (!normals.length && segmentClearForCircle(current, candidate, radius, map)) {
       return candidate;
     }
 
@@ -344,8 +344,12 @@ function moveCircleWithSliding(current, delta, radius, map) {
     }
   }
 
-  if (pointClearForCircle(add(current, adjustedDelta), radius, map)) {
-    return add(current, adjustedDelta);
+  const adjustedCandidate = add(current, adjustedDelta);
+  if (
+    pointClearForCircle(adjustedCandidate, radius, map) &&
+    segmentClearForCircle(current, adjustedCandidate, radius, map)
+  ) {
+    return adjustedCandidate;
   }
 
   let low = 0;
@@ -353,7 +357,10 @@ function moveCircleWithSliding(current, delta, radius, map) {
   for (let i = 0; i < 10; i += 1) {
     const mid = (low + high) / 2;
     const probe = add(current, scale(adjustedDelta, mid));
-    if (pointClearForCircle(probe, radius, map)) {
+    if (
+      pointClearForCircle(probe, radius, map) &&
+      segmentClearForCircle(current, probe, radius, map)
+    ) {
       low = mid;
     } else {
       high = mid;
@@ -383,6 +390,112 @@ function interpolateMotionEntry(entry, elapsedMs) {
 
   const last = samples[samples.length - 1];
   return { x: last.x, y: last.y };
+}
+
+function dot(a, b) {
+  return a.x * b.x + a.y * b.y;
+}
+
+function resolvePlayerMovementSlides(players, sim, proposed, radius, map) {
+  const adjusted = Object.fromEntries(
+    players.map((player) => [player.id, { ...proposed[player.id] }])
+  );
+
+  for (let iteration = 0; iteration < 6; iteration += 1) {
+    let changed = false;
+
+    for (let i = 0; i < players.length; i += 1) {
+      const a = players[i];
+      const aState = sim[a.id];
+      if (!aState || !a.roundAlive) {
+        continue;
+      }
+
+      for (let j = i + 1; j < players.length; j += 1) {
+        const b = players[j];
+        const bState = sim[b.id];
+        if (!bState || !b.roundAlive) {
+          continue;
+        }
+
+        const aCurrent = aState.current;
+        const bCurrent = bState.current;
+        const aNext = adjusted[a.id];
+        const bNext = adjusted[b.id];
+        const aDesired = subtract(aNext, aCurrent);
+        const bDesired = subtract(bNext, bCurrent);
+        const aMove = Math.hypot(aDesired.x, aDesired.y);
+        const bMove = Math.hypot(bDesired.x, bDesired.y);
+        const totalMove = aMove + bMove;
+        const aShare = totalMove > 1e-6 ? aMove / totalMove : 0.5;
+        const bShare = totalMove > 1e-6 ? bMove / totalMove : 0.5;
+
+        let diff = subtract(aNext, bNext);
+        let dist = Math.hypot(diff.x, diff.y);
+        let normal;
+        if (dist > 1e-6) {
+          normal = scale(diff, 1 / dist);
+        } else {
+          const relativeMove = subtract(aDesired, bDesired);
+          normal = normalizeVector(
+            Math.hypot(relativeMove.x, relativeMove.y) > 1e-6
+              ? relativeMove
+              : { x: a.id < b.id ? 1 : -1, y: 0 },
+            { x: 1, y: 0 }
+          );
+          dist = 0;
+        }
+
+        const relativeNormal = dot(subtract(aDesired, bDesired), normal);
+        let newADesired = { ...aDesired };
+        let newBDesired = { ...bDesired };
+
+        if (relativeNormal < 0) {
+          newADesired = add(newADesired, scale(normal, -relativeNormal * aShare));
+          newBDesired = subtract(newBDesired, scale(normal, -relativeNormal * bShare));
+        }
+
+        let newANext = moveCircleWithSliding(aCurrent, newADesired, radius, map);
+        let newBNext = moveCircleWithSliding(bCurrent, newBDesired, radius, map);
+        diff = subtract(newANext, newBNext);
+        dist = Math.hypot(diff.x, diff.y);
+
+        if (dist < radius * 2) {
+          if (dist > 1e-6) {
+            normal = scale(diff, 1 / dist);
+          }
+          const overlap = radius * 2 - dist + 0.5;
+          newANext = moveCircleWithSliding(
+            aCurrent,
+            add(subtract(newANext, aCurrent), scale(normal, overlap * aShare)),
+            radius,
+            map
+          );
+          newBNext = moveCircleWithSliding(
+            bCurrent,
+            subtract(subtract(newBNext, bCurrent), scale(normal, overlap * bShare)),
+            radius,
+            map
+          );
+        }
+
+        if (
+          distance(newANext, adjusted[a.id]) > 0.25 ||
+          distance(newBNext, adjusted[b.id]) > 0.25
+        ) {
+          adjusted[a.id] = newANext;
+          adjusted[b.id] = newBNext;
+          changed = true;
+        }
+      }
+    }
+
+    if (!changed) {
+      break;
+    }
+  }
+
+  return adjusted;
 }
 
 function movingCirclesCollisionTime(aStart, aEnd, bStart, bEnd, minDistance) {
@@ -974,112 +1087,40 @@ function simulateMovement(room, actionMap) {
       proposed[player.id] = moveCircleWithSliding(state.current, desiredDelta, radius, map);
     }
 
-    const collisionEvents = [];
-    for (let i = 0; i < players.length; i += 1) {
-      const a = players[i];
-      const aState = sim[a.id];
-      if (!aState || !a.roundAlive) {
-        continue;
-      }
-      for (let j = i + 1; j < players.length; j += 1) {
-        const b = players[j];
-        const bState = sim[b.id];
-        if (!bState || !b.roundAlive) {
-          continue;
-        }
-        const collisionT = movingCirclesCollisionTime(
-          aState.current,
-          proposed[a.id],
-          bState.current,
-          proposed[b.id],
-          radius * 2
-        );
-        if (collisionT !== null) {
-          collisionEvents.push({
-            aId: a.id,
-            bId: b.id,
-            collisionT
-          });
-        }
-      }
-    }
-
-    collisionEvents.sort((a, b) => a.collisionT - b.collisionT);
-    const collidedPlayers = new Set();
-    for (const event of collisionEvents) {
-      if (collidedPlayers.has(event.aId) || collidedPlayers.has(event.bId)) {
-        continue;
-      }
-
-      const aState = sim[event.aId];
-      const bState = sim[event.bId];
-      if (!aState || !bState || aState.halted || bState.halted) {
-        continue;
-      }
-
-      const aContact = lerpPoint(aState.current, proposed[event.aId], event.collisionT);
-      const bContact = lerpPoint(bState.current, proposed[event.bId], event.collisionT);
-      let separation = subtract(aContact, bContact);
-      let separationLength = Math.hypot(separation.x, separation.y);
-
-      if (separationLength < 1e-6) {
-        separation = normalizeVector(
-          subtract(proposed[event.aId], proposed[event.bId]),
-          { x: 1, y: 0 }
-        );
-        separationLength = 1;
-      } else {
-        separation = scale(separation, 1 / separationLength);
-      }
-
-      const desiredDistance = radius * 2 + 0.5;
-      const correction = Math.max(0, desiredDistance - separationLength) / 2;
-      const aResolved = add(aContact, scale(separation, correction));
-      const bResolved = subtract(bContact, scale(separation, correction));
-      const collisionTimeMs = Math.round(
-        (stepT0 + (stepT1 - stepT0) * event.collisionT) * CONFIG.movementMs
-      );
-
-      aState.current = aResolved;
-      bState.current = bResolved;
-      aState.halted = true;
-      bState.halted = true;
-      results[event.aId].end = { ...aResolved };
-      results[event.bId].end = { ...bResolved };
-      results[event.aId].haltedAtMs = collisionTimeMs;
-      results[event.bId].haltedAtMs = collisionTimeMs;
-
-      for (const [playerId, resolved] of [
-        [event.aId, aResolved],
-        [event.bId, bResolved]
-      ]) {
-        const lastSample = results[playerId].samples[results[playerId].samples.length - 1];
-        if (
-          lastSample.timeMs !== collisionTimeMs ||
-          Math.hypot(lastSample.x - resolved.x, lastSample.y - resolved.y) > 0.25
-        ) {
-          results[playerId].samples.push({
-            timeMs: collisionTimeMs,
-            x: resolved.x,
-            y: resolved.y
-          });
-        }
-      }
-
-      collidedPlayers.add(event.aId);
-      collidedPlayers.add(event.bId);
-    }
+    const resolved = resolvePlayerMovementSlides(players, sim, proposed, radius, map);
 
     for (const player of players) {
       const state = sim[player.id];
       if (!state || !player.roundAlive) {
         continue;
       }
-      if (state.halted) {
+      let blockedByOverlap = false;
+      for (const other of players) {
+        if (other.id === player.id) {
+          continue;
+        }
+        if (distance(resolved[player.id], resolved[other.id]) < radius * 2 - 0.5) {
+          blockedByOverlap = true;
+          break;
+        }
+      }
+
+      if (blockedByOverlap) {
+        state.halted = true;
+        results[player.id].end = { ...state.current };
+        results[player.id].haltedAtMs = Math.round(stepT0 * CONFIG.movementMs);
+        const lastSample = results[player.id].samples[results[player.id].samples.length - 1];
+        if (lastSample.timeMs !== results[player.id].haltedAtMs) {
+          results[player.id].samples.push({
+            timeMs: results[player.id].haltedAtMs,
+            x: state.current.x,
+            y: state.current.y
+          });
+        }
         continue;
       }
 
-      state.current = proposed[player.id];
+      state.current = resolved[player.id];
       results[player.id].end = { ...state.current };
       results[player.id].haltedAtMs = Math.round(stepT1 * CONFIG.movementMs);
       const timeMs = results[player.id].haltedAtMs;

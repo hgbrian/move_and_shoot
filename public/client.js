@@ -45,7 +45,7 @@ const state = {
   lastPlanningKey: "",
   pendingPlanSave: null,
   isTouch: window.matchMedia("(pointer: coarse)").matches,
-  sidePanelOpen: true,
+  sidePanelOpen: false,
   camera: {
     x: 0,
     y: 0,
@@ -63,7 +63,7 @@ const state = {
   }
 };
 
-const FIXED_CAMERA_ZOOM = 0.78;
+const FIXED_CAMERA_ZOOM = 0.624;
 const CAMERA_FOLLOW_SMOOTHING = 0.2;
 const CLOCK_OFFSET_SMOOTHING = 0.15;
 
@@ -129,6 +129,31 @@ function pushMessage(text) {
 
 function currentServerNow() {
   return Date.now() + state.clockOffsetMs;
+}
+
+function getPlayViewport() {
+  const margin = 16;
+  const topBarHeight = 92;
+  const reservedRight = state.isTouch ? 0 : Math.min(320, window.innerWidth * 0.26) + margin * 2;
+  const reservedBottom = state.isTouch
+    ? (state.sidePanelOpen ? Math.min(240, window.innerHeight * 0.28) : 64) + margin * 2
+    : margin;
+  const availableWidth = window.innerWidth - margin * 2 - reservedRight;
+  const availableHeight = window.innerHeight - topBarHeight - reservedBottom - margin;
+  const size = Math.max(120, Math.min(availableWidth, availableHeight));
+  const x = state.isTouch
+    ? margin + Math.max(0, (window.innerWidth - margin * 2 - size) / 2)
+    : margin + Math.max(0, (availableWidth - size) / 2);
+  const y = topBarHeight + Math.max(0, (availableHeight - size) / 2);
+  return {
+    x,
+    y,
+    size,
+    centerX: x + size / 2,
+    centerY: y + size / 2,
+    right: x + size,
+    bottom: y + size
+  };
 }
 
 function resizeCanvas() {
@@ -290,18 +315,20 @@ function ensureCamera() {
 }
 
 function worldToScreen(point) {
+  const viewport = getPlayViewport();
   const zoom = state.camera.zoom || 1;
   return {
-    x: (point.x - state.camera.x) * zoom + window.innerWidth / 2,
-    y: (point.y - state.camera.y) * zoom + window.innerHeight / 2
+    x: (point.x - state.camera.x) * zoom + viewport.centerX,
+    y: (point.y - state.camera.y) * zoom + viewport.centerY
   };
 }
 
 function screenToWorld(point) {
+  const viewport = getPlayViewport();
   const zoom = state.camera.zoom || 1;
   return {
-    x: (point.x - window.innerWidth / 2) / zoom + state.camera.x,
-    y: (point.y - window.innerHeight / 2) / zoom + state.camera.y
+    x: (point.x - viewport.centerX) / zoom + state.camera.x,
+    y: (point.y - viewport.centerY) / zoom + state.camera.y
   };
 }
 
@@ -516,26 +543,26 @@ function renderHud() {
   ui.openSidePanelButton.classList.toggle("hidden", !state.isTouch || state.sidePanelOpen);
 }
 
-function drawBackground(map) {
+function drawBackground(map, viewport) {
   ctx.fillStyle = "#ede2c8";
-  ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
+  ctx.fillRect(viewport.x, viewport.y, viewport.size, viewport.size);
 
   const grid = 120 * (state.camera.zoom || 1);
   ctx.strokeStyle = "rgba(92, 78, 50, 0.06)";
   ctx.lineWidth = 1;
-  const offsetX = ((window.innerWidth / 2 - state.camera.x * state.camera.zoom) % grid + grid) % grid;
-  const offsetY = ((window.innerHeight / 2 - state.camera.y * state.camera.zoom) % grid + grid) % grid;
+  const offsetX = ((viewport.centerX - state.camera.x * state.camera.zoom) % grid + grid) % grid;
+  const offsetY = ((viewport.centerY - state.camera.y * state.camera.zoom) % grid + grid) % grid;
 
-  for (let x = offsetX; x < window.innerWidth; x += grid) {
+  for (let x = viewport.x + offsetX; x < viewport.right; x += grid) {
     ctx.beginPath();
-    ctx.moveTo(x, 0);
-    ctx.lineTo(x, window.innerHeight);
+    ctx.moveTo(x, viewport.y);
+    ctx.lineTo(x, viewport.bottom);
     ctx.stroke();
   }
-  for (let y = offsetY; y < window.innerHeight; y += grid) {
+  for (let y = viewport.y + offsetY; y < viewport.bottom; y += grid) {
     ctx.beginPath();
-    ctx.moveTo(0, y);
-    ctx.lineTo(window.innerWidth, y);
+    ctx.moveTo(viewport.x, y);
+    ctx.lineTo(viewport.right, y);
     ctx.stroke();
   }
 
@@ -623,17 +650,17 @@ function drawBullets() {
     };
     const head = worldToScreen(currentPoint);
     const tail = worldToScreen({
-      x: currentPoint.x - bullet.direction.x * 64,
-      y: currentPoint.y - bullet.direction.y * 64
+      x: currentPoint.x - bullet.direction.x * 28,
+      y: currentPoint.y - bullet.direction.y * 28
     });
     ctx.strokeStyle = "rgba(6, 4, 3, 0.98)";
-    ctx.lineWidth = 7;
+    ctx.lineWidth = 4;
     ctx.beginPath();
     ctx.moveTo(tail.x, tail.y);
     ctx.lineTo(head.x, head.y);
     ctx.stroke();
     ctx.strokeStyle = "rgba(120, 52, 28, 0.98)";
-    ctx.lineWidth = 2;
+    ctx.lineWidth = 1.25;
     ctx.beginPath();
     ctx.moveTo(tail.x, tail.y);
     ctx.lineTo(head.x, head.y);
@@ -734,24 +761,26 @@ function drawSpectatorHint() {
   if (!state.snapshot || state.snapshot.you.alive) {
     return;
   }
+  const viewport = getPlayViewport();
   ctx.fillStyle = "rgba(18, 15, 10, 0.7)";
   ctx.font = "600 14px Trebuchet MS";
   ctx.textAlign = "left";
-  ctx.fillText("Spectating: drag to pan, use buttons or wheel to zoom.", 22, window.innerHeight - 24);
+  ctx.fillText("Spectating: drag to pan.", viewport.x, viewport.bottom + 24);
 }
 
 function drawOverlayText() {
   if (!state.snapshot) {
     return;
   }
+  const viewport = getPlayViewport();
   ctx.fillStyle = "rgba(18,15,10,0.82)";
   ctx.font = "700 18px Trebuchet MS";
   ctx.textAlign = "center";
   if (state.snapshot.room.phase === "planning") {
     ctx.fillText(
       state.inputStep === "move" ? "Choose move destination" : "Choose shoot direction",
-      window.innerWidth / 2,
-      window.innerHeight - 26
+      viewport.centerX,
+      viewport.bottom + 26
     );
   }
 
@@ -764,8 +793,8 @@ function drawOverlayText() {
     ctx.font = "700 34px Trebuchet MS";
     ctx.fillText(
       summary.draw ? "Round Draw" : `${winner ? winner.name : "A player"} Won The Round`,
-      window.innerWidth / 2,
-      window.innerHeight / 2
+      viewport.centerX,
+      viewport.centerY
     );
   }
 
@@ -778,18 +807,20 @@ function drawOverlayText() {
     ctx.font = "700 40px Trebuchet MS";
     ctx.fillText(
       winner ? `${winner.name} Won The Match` : "Match Draw",
-      window.innerWidth / 2,
-      window.innerHeight / 2
+      viewport.centerX,
+      viewport.centerY
     );
   }
 
   ctx.font = "500 13px Trebuchet MS";
   ctx.textAlign = "left";
-  ctx.fillText("Wheel to zoom. Right-drag or WASD/arrow keys to pan. Press C to recenter.", 22, window.innerHeight - 24);
+  ctx.fillText("Camera follows you, then follows your bullet during the shot phase.", viewport.x, viewport.y - 10);
 }
 
 function render() {
   ctx.clearRect(0, 0, window.innerWidth, window.innerHeight);
+  ctx.fillStyle = "#e7ddc8";
+  ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
 
   if (!state.snapshot?.match?.active || !state.snapshot.match.map) {
     ctx.fillStyle = "rgba(22,18,13,0.82)";
@@ -803,11 +834,20 @@ function render() {
   }
 
   ensureCamera();
-  drawBackground(state.snapshot.match.map);
+  const viewport = getPlayViewport();
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(viewport.x, viewport.y, viewport.size, viewport.size);
+  ctx.clip();
+  drawBackground(state.snapshot.match.map, viewport);
   drawBuildings(state.snapshot.match.map);
   drawMoveAndAimPreview();
   drawBullets();
   drawPlayers();
+  ctx.restore();
+  ctx.strokeStyle = "rgba(45, 32, 18, 0.35)";
+  ctx.lineWidth = 3;
+  ctx.strokeRect(viewport.x, viewport.y, viewport.size, viewport.size);
   drawSpectatorHint();
   drawOverlayText();
   state.animationFrame = requestAnimationFrame(render);
@@ -922,6 +962,15 @@ canvas.addEventListener("pointerdown", async (event) => {
     return;
   }
   const point = getCanvasPoint(event);
+  const viewport = getPlayViewport();
+  if (
+    point.x < viewport.x ||
+    point.x > viewport.right ||
+    point.y < viewport.y ||
+    point.y > viewport.bottom
+  ) {
+    return;
+  }
   const world = screenToWorld(point);
   await handlePlanningClick(world);
 });
