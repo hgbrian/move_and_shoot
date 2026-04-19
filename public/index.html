@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <title>Move and Shoot</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <div id="app">
+      <section id="menu" class="panel">
+        <h1>Move and Shoot</h1>
+        <p class="subtitle">Barebones simultaneous-turn battle royale prototype.</p>
+        <label class="field">
+          <span>Room code</span>
+          <input id="room-code-input" maxlength="4" autocomplete="off" placeholder="Enter 4-letter room code">
+        </label>
+        <div class="actions">
+          <button id="create-room-button" class="primary">Create Room</button>
+          <button id="join-room-button">Join Room</button>
+        </div>
+        <p id="menu-message" class="hint">Blank room code creates a new room.</p>
+        <div class="rules">
+          <p>Controls</p>
+          <p>Desktop: click move point, then click aim. Click again to change it.</p>
+          <p>Mobile: tap move point, then tap aim. Pinch zoom is not included in v1.</p>
+        </div>
+      </section>
+
+      <section id="hud" class="hidden">
+        <div class="top-bar panel">
+          <div>
+            <div class="label">Room</div>
+            <div id="room-code-label" class="value">----</div>
+          </div>
+          <div>
+            <div class="label">Phase</div>
+            <div id="phase-label" class="value">Waiting</div>
+          </div>
+          <div>
+            <div class="label">Timer</div>
+            <div id="timer-label" class="value">--</div>
+          </div>
+          <div>
+            <div class="label">Round</div>
+            <div id="round-label" class="value">- / 3</div>
+          </div>
+          <div>
+            <div class="label">Turn</div>
+            <div id="turn-label" class="value">-</div>
+          </div>
+          <div>
+            <div class="label">Status</div>
+            <div id="ready-label" class="value">Planning</div>
+          </div>
+        </div>
+
+        <div class="side-panel panel">
+          <h2>Scoreboard</h2>
+          <div id="scoreboard"></div>
+          <div class="separator"></div>
+          <h2>Messages</h2>
+          <div id="messages" class="messages"></div>
+        </div>
+
+        <div id="touch-actions" class="panel hidden">
+          <button id="center-camera-button">Center</button>
+          <button id="zoom-out-button">-</button>
+          <button id="zoom-in-button">+</button>
+        </div>
+      </section>
+
+      <canvas id="game-canvas"></canvas>
+    </div>
+
+    <script src="/client.js"></script>
+  </body>
+  </html>

@@ -1,0 +1,9 @@
+{
+  "name": "move-and-shoot",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Barebones online turn-based battle royale prototype.",
+  "scripts": {
+    "start": "node server.js"
+  }
+}
