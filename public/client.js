@@ -678,6 +678,9 @@ async function joinRoom(roomCode) {
   const result = await api("/api/join", { method: "POST", body: payload });
   state.token = result.token;
   state.roomCode = result.roomCode;
+  if (result.roomCode === "H3LP") {
+    alert("Ruby's belly");
+  }
   localStorage.setItem("move-and-shoot-token", result.token);
   ui.roomCodeInput.value = result.roomCode;
   ui.menu.classList.add("hidden");
