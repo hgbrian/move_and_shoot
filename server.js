@@ -427,7 +427,7 @@ function resolvePlayerMovementSlides(players, sim, proposed, radius, map) {
     players.map((player) => [player.id, { ...proposed[player.id] }])
   );
 
-  for (let iteration = 0; iteration < 6; iteration += 1) {
+  for (let iteration = 0; iteration < 10; iteration += 1) {
     let changed = false;
 
     for (let i = 0; i < players.length; i += 1) {
@@ -448,62 +448,38 @@ function resolvePlayerMovementSlides(players, sim, proposed, radius, map) {
         const bCurrent = bState.current;
         const aNext = adjusted[a.id];
         const bNext = adjusted[b.id];
-        const aDesired = subtract(aNext, aCurrent);
-        const bDesired = subtract(bNext, bCurrent);
-        const aMove = Math.hypot(aDesired.x, aDesired.y);
-        const bMove = Math.hypot(bDesired.x, bDesired.y);
-        const totalMove = aMove + bMove;
-        const aShare = totalMove > 1e-6 ? aMove / totalMove : 0.5;
-        const bShare = totalMove > 1e-6 ? bMove / totalMove : 0.5;
 
         let diff = subtract(aNext, bNext);
         let dist = Math.hypot(diff.x, diff.y);
+        if (dist >= radius * 2 - 0.01) {
+          continue;
+        }
+
         let normal;
         if (dist > 1e-6) {
           normal = scale(diff, 1 / dist);
         } else {
-          const relativeMove = subtract(aDesired, bDesired);
+          const relativeStart = subtract(aCurrent, bCurrent);
           normal = normalizeVector(
-            Math.hypot(relativeMove.x, relativeMove.y) > 1e-6
-              ? relativeMove
+            Math.hypot(relativeStart.x, relativeStart.y) > 1e-6
+              ? relativeStart
               : { x: a.id < b.id ? 1 : -1, y: 0 },
             { x: 1, y: 0 }
           );
           dist = 0;
         }
 
-        const relativeNormal = dot(subtract(aDesired, bDesired), normal);
-        let newADesired = { ...aDesired };
-        let newBDesired = { ...bDesired };
+        const aTravel = distance(aCurrent, aNext);
+        const bTravel = distance(bCurrent, bNext);
+        const totalTravel = aTravel + bTravel;
+        const aShare = totalTravel > 1e-6 ? aTravel / totalTravel : 0.5;
+        const bShare = totalTravel > 1e-6 ? bTravel / totalTravel : 0.5;
+        const overlap = radius * 2 - dist + 0.02;
 
-        if (relativeNormal < 0) {
-          newADesired = add(newADesired, scale(normal, -relativeNormal * aShare));
-          newBDesired = subtract(newBDesired, scale(normal, -relativeNormal * bShare));
-        }
-
-        let newANext = moveCircleWithSliding(aCurrent, newADesired, radius, map);
-        let newBNext = moveCircleWithSliding(bCurrent, newBDesired, radius, map);
-        diff = subtract(newANext, newBNext);
-        dist = Math.hypot(diff.x, diff.y);
-
-        if (dist < radius * 2) {
-          if (dist > 1e-6) {
-            normal = scale(diff, 1 / dist);
-          }
-          const overlap = radius * 2 - dist + 0.5;
-          newANext = moveCircleWithSliding(
-            aCurrent,
-            add(subtract(newANext, aCurrent), scale(normal, overlap * aShare)),
-            radius,
-            map
-          );
-          newBNext = moveCircleWithSliding(
-            bCurrent,
-            subtract(subtract(newBNext, bCurrent), scale(normal, overlap * bShare)),
-            radius,
-            map
-          );
-        }
+        const aCorrection = scale(normal, overlap * aShare);
+        const bCorrection = scale(normal, -overlap * bShare);
+        const newANext = furthestClearPointAlongDelta(aNext, aCorrection, radius, map);
+        const newBNext = furthestClearPointAlongDelta(bNext, bCorrection, radius, map);
 
         if (
           distance(newANext, adjusted[a.id]) > 0.25 ||
@@ -1055,7 +1031,7 @@ function normalizedMoveTarget(player, moveTarget) {
 function simulateMovement(room, actionMap) {
   const map = room.round.map;
   const radius = CONFIG.playerRadius;
-  const steps = 120;
+  const steps = 180;
   const players = room.match.participantIds
     .map((playerId) => room.players.get(playerId))
     .filter(Boolean);
@@ -1120,32 +1096,6 @@ function simulateMovement(room, actionMap) {
       if (!state || !player.roundAlive) {
         continue;
       }
-      let blockedByOverlap = false;
-      for (const other of players) {
-        if (other.id === player.id) {
-          continue;
-        }
-        if (distance(resolved[player.id], resolved[other.id]) < radius * 2 - 0.5) {
-          blockedByOverlap = true;
-          break;
-        }
-      }
-
-      if (blockedByOverlap) {
-        state.halted = true;
-        results[player.id].end = { ...state.current };
-        results[player.id].haltedAtMs = Math.round(stepT0 * CONFIG.movementMs);
-        const lastSample = results[player.id].samples[results[player.id].samples.length - 1];
-        if (lastSample.timeMs !== results[player.id].haltedAtMs) {
-          results[player.id].samples.push({
-            timeMs: results[player.id].haltedAtMs,
-            x: state.current.x,
-            y: state.current.y
-          });
-        }
-        continue;
-      }
-
       state.current = resolved[player.id];
       results[player.id].end = { ...state.current };
       results[player.id].haltedAtMs = Math.round(stepT1 * CONFIG.movementMs);

@@ -835,6 +835,23 @@ function getCanvasPoint(event) {
   };
 }
 
+async function handleScreenPointInput(point) {
+  if (!state.snapshot?.match?.active || !state.snapshot.you.alive) {
+    return;
+  }
+  const viewport = getPlayViewport();
+  if (
+    point.x < viewport.x ||
+    point.x > viewport.right ||
+    point.y < viewport.y ||
+    point.y > viewport.bottom
+  ) {
+    return;
+  }
+  const world = screenToWorld(point);
+  await handlePlanningClick(world);
+}
+
 async function savePlan(plan) {
   if (!state.token) {
     return;
@@ -923,6 +940,9 @@ canvas.addEventListener("pointerdown", async (event) => {
   if (!state.snapshot?.match?.active) {
     return;
   }
+  if (event.pointerType === "touch") {
+    return;
+  }
   if (!state.snapshot.you.alive) {
     state.dragCamera.active = true;
     state.dragCamera.startX = event.clientX;
@@ -936,18 +956,29 @@ canvas.addEventListener("pointerdown", async (event) => {
     return;
   }
   const point = getCanvasPoint(event);
-  const viewport = getPlayViewport();
-  if (
-    point.x < viewport.x ||
-    point.x > viewport.right ||
-    point.y < viewport.y ||
-    point.y > viewport.bottom
-  ) {
-    return;
-  }
-  const world = screenToWorld(point);
-  await handlePlanningClick(world);
+  await handleScreenPointInput(point);
 });
+
+canvas.addEventListener(
+  "touchend",
+  async (event) => {
+    sounds.unlock();
+    if (!state.snapshot?.match?.active || !state.snapshot.you.alive) {
+      return;
+    }
+    const touch = event.changedTouches && event.changedTouches[0];
+    if (!touch) {
+      return;
+    }
+    event.preventDefault();
+    const rect = canvas.getBoundingClientRect();
+    await handleScreenPointInput({
+      x: touch.clientX - rect.left,
+      y: touch.clientY - rect.top
+    });
+  },
+  { passive: false }
+);
 
 window.addEventListener("pointermove", (event) => {
   if (!state.snapshot?.match?.active || !state.dragCamera.active) {
