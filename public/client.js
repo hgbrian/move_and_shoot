@@ -4,6 +4,8 @@ const ctx = canvas.getContext("2d");
 const ui = {
   menu: document.getElementById("menu"),
   hud: document.getElementById("hud"),
+  playerNameInput: document.getElementById("player-name-input"),
+  mapSizeInput: document.getElementById("map-size-input"),
   roomCodeInput: document.getElementById("room-code-input"),
   createRoomButton: document.getElementById("create-room-button"),
   joinRoomButton: document.getElementById("join-room-button"),
@@ -15,6 +17,7 @@ const ui = {
   turnLabel: document.getElementById("turn-label"),
   readyLabel: document.getElementById("ready-label"),
   scoreboard: document.getElementById("scoreboard"),
+  startGameButton: document.getElementById("start-game-button"),
   messages: document.getElementById("messages"),
   touchActions: document.getElementById("touch-actions"),
   centerCameraButton: document.getElementById("center-camera-button"),
@@ -261,7 +264,12 @@ function api(path, options = {}) {
 }
 
 async function joinRoom(roomCode) {
+  const name = ui.playerNameInput.value.trim().slice(0, 20);
   const payload = roomCode ? { roomCode } : {};
+  if (name) {
+    payload.name = name;
+  }
+  payload.mapGridSize = Number(ui.mapSizeInput.value) || 2;
   const result = await api("/api/join", { method: "POST", body: payload });
   state.token = result.token;
   state.roomCode = result.roomCode;
@@ -400,6 +408,15 @@ function renderHud() {
     : state.snapshot.you.alive
       ? "Planning"
       : "Spectating";
+  ui.startGameButton.classList.toggle(
+    "hidden",
+    !(state.snapshot.you.isHost && state.snapshot.room.phase === "lobby")
+  );
+  ui.startGameButton.disabled = state.snapshot.room.connectedCount < state.snapshot.room.minPlayers;
+  ui.startGameButton.textContent =
+    state.snapshot.room.connectedCount < state.snapshot.room.minPlayers
+      ? "Need 2 Players"
+      : "Start Game";
 
   ui.scoreboard.innerHTML = "";
   const scoreboard = [...state.snapshot.players].sort((a, b) => b.wins - a.wins || b.survivalMs - a.survivalMs);
@@ -412,7 +429,7 @@ function renderHud() {
     swatch.className = "swatch";
     swatch.style.background = player.color;
     const text = document.createElement("span");
-    text.textContent = `${player.name}${player.id === state.snapshot.you.id ? " (You)" : ""}${!player.connected ? " [DC]" : ""}`;
+    text.textContent = `${player.name}${player.id === state.snapshot.room.hostId ? " (Host)" : ""}${player.id === state.snapshot.you.id ? " (You)" : ""}${!player.connected ? " [DC]" : ""}`;
     name.append(swatch, text);
     const meta = document.createElement("div");
     meta.textContent = `${player.wins}W`;
@@ -557,7 +574,7 @@ function drawPlayer(player) {
   const alive = player.alive;
   const brimRadius = radius * 1.3;
   const crownRadius = radius * 0.72;
-  const crownOffsetY = -radius * 0.22;
+  const crownOffsetY = 0;
   ctx.save();
   ctx.translate(screen.x, screen.y);
 
@@ -628,6 +645,35 @@ function drawOverlayText() {
       window.innerHeight - 26
     );
   }
+
+  if (state.snapshot.room.phase === "round_end" && state.snapshot.summaries?.round) {
+    const summary = state.snapshot.summaries.round;
+    const winner = summary.winnerId
+      ? state.snapshot.players.find((player) => player.id === summary.winnerId)
+      : null;
+    ctx.textAlign = "center";
+    ctx.font = "700 34px Trebuchet MS";
+    ctx.fillText(
+      summary.draw ? "Round Draw" : `${winner ? winner.name : "A player"} Won The Round`,
+      window.innerWidth / 2,
+      window.innerHeight / 2
+    );
+  }
+
+  if (state.snapshot.room.phase === "match_end" && state.snapshot.summaries?.match) {
+    const summary = state.snapshot.summaries.match;
+    const winner = summary.winnerId
+      ? summary.scoreboard.find((player) => player.id === summary.winnerId)
+      : null;
+    ctx.textAlign = "center";
+    ctx.font = "700 40px Trebuchet MS";
+    ctx.fillText(
+      winner ? `${winner.name} Won The Match` : "Match Draw",
+      window.innerWidth / 2,
+      window.innerHeight / 2
+    );
+  }
+
   ctx.font = "500 13px Trebuchet MS";
   ctx.textAlign = "left";
   ctx.fillText("Wheel to zoom. Right-drag or WASD/arrow keys to pan. Press C to recenter.", 22, window.innerHeight - 24);
@@ -676,6 +722,18 @@ async function savePlan(plan) {
       token: state.token,
       moveTarget: plan.moveTarget,
       aimDir: plan.aimDir
+    }
+  });
+}
+
+async function startGame() {
+  if (!state.token) {
+    return;
+  }
+  await api("/api/start", {
+    method: "POST",
+    body: {
+      token: state.token
     }
   });
 }
@@ -842,6 +900,16 @@ ui.joinRoomButton.addEventListener("click", async () => {
     await joinRoom(ui.roomCodeInput.value);
   } catch (error) {
     ui.menuMessage.textContent = error.message;
+  }
+});
+
+ui.startGameButton.addEventListener("click", async () => {
+  sounds.unlock();
+  try {
+    await startGame();
+    pushMessage("Host started the match countdown.");
+  } catch (error) {
+    pushMessage(error.message);
   }
 });
 

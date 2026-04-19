@@ -90,10 +90,28 @@ body {
   text-transform: uppercase;
 }
 
+.field select {
+  width: 100%;
+  padding: 14px 16px;
+  border-radius: 14px;
+  border: 1px solid rgba(27, 20, 13, 0.18);
+  background: rgba(255, 255, 255, 0.7);
+  font-size: 1rem;
+  color: var(--ink);
+}
+
 .actions {
   display: flex;
   gap: 12px;
   margin-top: 16px;
+}
+
+.actions.stacked {
+  margin-top: 0;
+}
+
+.actions.stacked button {
+  width: 100%;
 }
 
 button {

@@ -12,6 +12,17 @@
         <h1>Move and Shoot</h1>
         <p class="subtitle">Barebones simultaneous-turn battle royale prototype.</p>
         <label class="field">
+          <span>Name <em>(optional)</em></span>
+          <input id="player-name-input" maxlength="20" autocomplete="off" placeholder="Leave blank for guest name">
+        </label>
+        <label class="field">
+          <span>Map size <em>(new room only)</em></span>
+          <select id="map-size-input">
+            <option value="2">2x2</option>
+            <option value="4">4x4</option>
+          </select>
+        </label>
+        <label class="field">
           <span>Room code</span>
           <input id="room-code-input" maxlength="4" autocomplete="off" placeholder="Enter 4-letter room code">
         </label>
@@ -58,6 +69,10 @@
         <div class="side-panel panel">
           <h2>Scoreboard</h2>
           <div id="scoreboard"></div>
+          <div class="separator"></div>
+          <div class="actions stacked">
+            <button id="start-game-button" class="primary hidden">Start Game</button>
+          </div>
           <div class="separator"></div>
           <h2>Messages</h2>
           <div id="messages" class="messages"></div>

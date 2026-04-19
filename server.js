@@ -13,13 +13,11 @@ const CONFIG = {
   totalRounds: 3,
   lobbyCountdownMs: 3_000,
   preRoundCountdownMs: 3_000,
-  planningMs: 10_000,
+  planningMs: 8_000,
   movementMs: 2_000,
   roundEndPauseMs: 3_000,
-  screenWidth: 1600,
-  screenHeight: 900,
-  mapScreensWide: 2,
-  mapScreensHigh: 2,
+  screenSize: 1200,
+  defaultMapGridSize: 2,
   defaultBuildingCount: 30,
   playerRadius: 18,
   moveRange: 360,
@@ -126,6 +124,67 @@ function rotateVectorIntoLocal(vector, building) {
     x: vector.x * cos - vector.y * sin,
     y: vector.x * sin + vector.y * cos
   };
+}
+
+function rotatedRectangleCorners(building, expandBy = 0) {
+  const halfWidth = building.halfWidth + expandBy;
+  const halfHeight = building.halfHeight + expandBy;
+  const cos = Math.cos(building.angleRad);
+  const sin = Math.sin(building.angleRad);
+  const localCorners = [
+    { x: -halfWidth, y: -halfHeight },
+    { x: halfWidth, y: -halfHeight },
+    { x: halfWidth, y: halfHeight },
+    { x: -halfWidth, y: halfHeight }
+  ];
+
+  return localCorners.map((corner) => ({
+    x: building.x + corner.x * cos - corner.y * sin,
+    y: building.y + corner.x * sin + corner.y * cos
+  }));
+}
+
+function normalizedAxis(a, b) {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const length = Math.hypot(dx, dy) || 1;
+  return { x: -dy / length, y: dx / length };
+}
+
+function projectPointsOntoAxis(points, axis) {
+  let min = Infinity;
+  let max = -Infinity;
+  for (const point of points) {
+    const projection = point.x * axis.x + point.y * axis.y;
+    if (projection < min) {
+      min = projection;
+    }
+    if (projection > max) {
+      max = projection;
+    }
+  }
+  return { min, max };
+}
+
+function rotatedRectanglesOverlap(a, b, expandBy = 0) {
+  const aCorners = rotatedRectangleCorners(a, expandBy);
+  const bCorners = rotatedRectangleCorners(b, expandBy);
+  const axes = [
+    normalizedAxis(aCorners[0], aCorners[1]),
+    normalizedAxis(aCorners[1], aCorners[2]),
+    normalizedAxis(bCorners[0], bCorners[1]),
+    normalizedAxis(bCorners[1], bCorners[2])
+  ];
+
+  for (const axis of axes) {
+    const aProjection = projectPointsOntoAxis(aCorners, axis);
+    const bProjection = projectPointsOntoAxis(bCorners, axis);
+    if (aProjection.max < bProjection.min || bProjection.max < aProjection.min) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 function liangBarsky(start, end, minX, maxX, minY, maxY) {
@@ -324,6 +383,23 @@ function lineOfSightClear(start, end, map) {
   return true;
 }
 
+function currentMovementPosition(room, player, timestampMs = nowMs()) {
+  if (!room.round?.currentTurn?.movement || room.phase !== "movement") {
+    return { x: player.x, y: player.y };
+  }
+
+  const movement = room.round.currentTurn.movement;
+  const entry = movement.byPlayer?.[player.id];
+  if (!entry) {
+    return { x: player.x, y: player.y };
+  }
+
+  const activeDuration = Math.max(entry.haltedAtMs || movement.durationMs, 1);
+  const elapsed = clamp(timestampMs - movement.startedAt, 0, activeDuration);
+  const t = clamp(elapsed / activeDuration, 0, 1);
+  return lerpPoint(entry.start, entry.end, t);
+}
+
 function rayCircleHitDistance(origin, direction, center, radius) {
   const offset = subtract(center, origin);
   const projected = offset.x * direction.x + offset.y * direction.y;
@@ -359,6 +435,10 @@ function createRoom(code) {
     code,
     createdAt: nowMs(),
     players: new Map(),
+    hostId: null,
+    settings: {
+      mapGridSize: CONFIG.defaultMapGridSize
+    },
     phase: "lobby",
     phaseStartedAt: nowMs(),
     phaseEndsAt: null,
@@ -374,13 +454,17 @@ function connectedPlayers(room) {
   return Array.from(room.players.values()).filter((player) => player.connected);
 }
 
-function activeLobbyPlayers(room) {
-  return Array.from(room.players.values()).filter((player) => {
-    if (room.match && room.match.participantIds.includes(player.id)) {
-      return player.connected;
+function ensureHost(room) {
+  if (room.hostId) {
+    const currentHost = room.players.get(room.hostId);
+    if (currentHost && currentHost.connected) {
+      return currentHost;
     }
-    return player.connected;
-  });
+  }
+
+  const nextHost = Array.from(room.players.values()).find((player) => player.connected) || null;
+  room.hostId = nextHost ? nextHost.id : null;
+  return nextHost;
 }
 
 function setPhase(room, phase, durationMs, label) {
@@ -426,15 +510,32 @@ function sanitizeRoomCode(rawCode) {
   return value;
 }
 
-function generateMap() {
+function sanitizePlayerName(rawName) {
+  return String(rawName || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 20);
+}
+
+function sanitizeMapGridSize(rawValue) {
+  const parsed = Number(rawValue);
+  return parsed === 4 ? 4 : 2;
+}
+
+function generateMap(mapGridSize) {
+  const gridSize = sanitizeMapGridSize(mapGridSize);
+  const buildingTarget = Math.min(
+    100,
+    Math.round(CONFIG.defaultBuildingCount * ((gridSize * gridSize) / 4))
+  );
   const map = {
-    width: CONFIG.screenWidth * CONFIG.mapScreensWide,
-    height: CONFIG.screenHeight * CONFIG.mapScreensHigh,
+    width: CONFIG.screenSize * gridSize,
+    height: CONFIG.screenSize * gridSize,
     buildings: []
   };
 
-  const corridorPadding = 110;
-  for (let attempt = 0; attempt < 2000 && map.buildings.length < CONFIG.defaultBuildingCount; attempt += 1) {
+  const corridorPadding = 28;
+  for (let attempt = 0; attempt < 8000 && map.buildings.length < buildingTarget; attempt += 1) {
     const angleDeg =
       CONFIG.buildingAngles[Math.floor(Math.random() * CONFIG.buildingAngles.length)];
     const width = 120 + Math.random() * 260;
@@ -452,11 +553,7 @@ function generateMap() {
 
     let blocked = false;
     for (const other of map.buildings) {
-      const dx = Math.abs(building.x - other.x);
-      const dy = Math.abs(building.y - other.y);
-      const limitX = building.halfWidth + other.halfWidth + corridorPadding;
-      const limitY = building.halfHeight + other.halfHeight + corridorPadding;
-      if (dx < limitX && dy < limitY) {
+      if (rotatedRectanglesOverlap(building, other, corridorPadding)) {
         blocked = true;
         break;
       }
@@ -538,6 +635,7 @@ function beginLobbyCountdown(room) {
 }
 
 function startMatch(room) {
+  ensureHost(room);
   const participants = connectedPlayers(room).slice(0, CONFIG.maxPlayers);
   if (participants.length < CONFIG.minPlayers) {
     setPhase(room, "lobby", null, "Waiting for players");
@@ -562,7 +660,7 @@ function startRound(room) {
   }
   room.match.currentRoundNumber += 1;
   const participantIds = room.match.participantIds;
-  const map = generateMap();
+  const map = generateMap(room.settings.mapGridSize);
   const spawns = findSpawnPoints(map, participantIds.length);
   room.round = {
     number: room.match.currentRoundNumber,
@@ -1027,6 +1125,7 @@ function returnRoomToLobby(room) {
 
 function updateRoom(room) {
   const now = nowMs();
+  ensureHost(room);
 
   for (const player of room.players.values()) {
     if (player.connected && now - player.lastSeenAt > CONFIG.pollGraceMs) {
@@ -1047,9 +1146,6 @@ function updateRoom(room) {
   const connectedCount = connectedPlayers(room).length;
 
   if (room.phase === "lobby") {
-    if (connectedCount >= CONFIG.minPlayers) {
-      beginLobbyCountdown(room);
-    }
     return;
   }
 
@@ -1125,12 +1221,15 @@ function shouldRevealPlayerToViewer(room, viewer, target) {
   if (room.phase === "planning") {
     return planningVisibilityForPlayer(room, viewer.id).includes(target.id);
   }
-  return true;
+  const viewerPosition = currentMovementPosition(room, viewer);
+  const targetPosition = currentMovementPosition(room, target);
+  return lineOfSightClear(viewerPosition, targetPosition, room.round.map);
 }
 
 function serializePlayerForViewer(room, viewer, target) {
   const inCurrentMatch = room.match ? room.match.participantIds.includes(target.id) : false;
   const visibleToYou = shouldRevealPlayerToViewer(room, viewer, target);
+  const position = currentMovementPosition(room, target);
   return {
     id: target.id,
     name: target.name,
@@ -1139,8 +1238,8 @@ function serializePlayerForViewer(room, viewer, target) {
     disconnected: target.disconnected,
     alive: inCurrentMatch ? !!target.roundAlive : false,
     spectating: inCurrentMatch ? !!target.spectating : false,
-    x: visibleToYou ? target.x : null,
-    y: visibleToYou ? target.y : null,
+    x: visibleToYou ? position.x : null,
+    y: visibleToYou ? position.y : null,
     wins: room.match ? room.match.roundWins[target.id] || 0 : 0,
     survivalMs: room.match ? room.match.totalSurvivalMs[target.id] || 0 : 0,
     lastAimDir: visibleToYou ? target.lastAimDir : null,
@@ -1150,6 +1249,7 @@ function serializePlayerForViewer(room, viewer, target) {
 
 function buildState(player) {
   const room = rooms.get(player.roomCode);
+  ensureHost(room);
   const players = Array.from(room.players.values());
   const phaseEndsInMs = room.phaseEndsAt ? Math.max(0, room.phaseEndsAt - nowMs()) : null;
 
@@ -1162,11 +1262,12 @@ function buildState(player) {
       planningMs: CONFIG.planningMs,
       movementMs: CONFIG.movementMs,
       bulletSpeed: CONFIG.bulletSpeed,
-      screenWidth: CONFIG.screenWidth,
-      screenHeight: CONFIG.screenHeight
+      screenSize: CONFIG.screenSize
     },
     room: {
       code: room.code,
+      hostId: room.hostId,
+      settings: room.settings,
       phase: room.phase,
       phaseLabel: room.phaseLabel,
       phaseEndsAt: room.phaseEndsAt,
@@ -1179,6 +1280,7 @@ function buildState(player) {
     you: {
       id: player.id,
       name: player.name,
+      isHost: player.id === room.hostId,
       color: player.color,
       connected: player.connected,
       disconnected: player.disconnected,
@@ -1290,6 +1392,8 @@ function serveFile(requestPath, response) {
 async function handleJoin(request, response) {
   const body = await readJsonBody(request);
   const desiredCode = sanitizeRoomCode(body.roomCode);
+  const requestedName = sanitizePlayerName(body.name);
+  const requestedMapGridSize = sanitizeMapGridSize(body.mapGridSize);
   if (body.roomCode && desiredCode.length !== CONFIG.roomCodeLength) {
     json(response, 400, { ok: false, error: "Room codes must be 4 characters." });
     return;
@@ -1304,6 +1408,9 @@ async function handleJoin(request, response) {
   if (!room) {
     const code = desiredCode || generateRoomCode();
     room = createRoom(code);
+    room.settings = {
+      mapGridSize: requestedMapGridSize || CONFIG.defaultMapGridSize
+    };
     rooms.set(code, room);
   }
 
@@ -1317,13 +1424,13 @@ async function handleJoin(request, response) {
     id: `player-${serial}`,
     token: randomId(24),
     roomCode: room.code,
-    name: generateGuestName(room),
+    name: requestedName || generateGuestName(room),
     color: generateColor(serial),
     connected: true,
     disconnected: false,
     lastSeenAt: nowMs(),
-    x: CONFIG.screenWidth / 2,
-    y: CONFIG.screenHeight / 2,
+    x: CONFIG.screenSize / 2,
+    y: CONFIG.screenSize / 2,
     spawnX: 0,
     spawnY: 0,
     roundAlive: false,
@@ -1417,6 +1524,39 @@ async function handleLeave(request, response) {
   json(response, 200, { ok: true });
 }
 
+async function handleStart(request, response) {
+  const body = await readJsonBody(request);
+  const player = getPlayerByToken(body.token);
+  if (!player) {
+    json(response, 401, { ok: false, error: "Invalid session." });
+    return;
+  }
+
+  const room = rooms.get(player.roomCode);
+  player.lastSeenAt = nowMs();
+  player.connected = true;
+  player.disconnected = false;
+  ensureHost(room);
+
+  if (player.id !== room.hostId) {
+    json(response, 403, { ok: false, error: "Only the host can start the game." });
+    return;
+  }
+
+  if (room.phase !== "lobby") {
+    json(response, 409, { ok: false, error: "The room is not in the lobby." });
+    return;
+  }
+
+  if (connectedPlayers(room).length < CONFIG.minPlayers) {
+    json(response, 409, { ok: false, error: "At least 2 players are required." });
+    return;
+  }
+
+  beginLobbyCountdown(room);
+  json(response, 200, { ok: true });
+}
+
 function handleState(request, response, urlObject) {
   const token = urlObject.searchParams.get("token");
   const player = getPlayerByToken(token);
@@ -1451,6 +1591,11 @@ const server = http.createServer(async (request, response) => {
 
     if (request.method === "POST" && urlObject.pathname === "/api/leave") {
       await handleLeave(request, response);
+      return;
+    }
+
+    if (request.method === "POST" && urlObject.pathname === "/api/start") {
+      await handleStart(request, response);
       return;
     }
 
