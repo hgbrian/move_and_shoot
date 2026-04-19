@@ -27,11 +27,10 @@ const state = {
   token: localStorage.getItem("move-and-shoot-token") || "",
   roomCode: "",
   snapshot: null,
-  clockOffsetMs: 0,
-  lastServerNowMs: 0,
-  lastPerfNowMs: 0,
-  pollTimer: null,
   animationFrame: 0,
+  longPollActive: false,
+  phaseLocalStartMs: 0,
+  phaseDurationMs: null,
   inputStep: "move",
   draftMoveTarget: null,
   draftAimDir: { x: 0, y: -1 },
@@ -74,7 +73,6 @@ const state = {
 const FIXED_CAMERA_ZOOM = 0.624;
 const CAMERA_FOLLOW_SMOOTHING = 0.2;
 const CAMERA_BULLET_SMOOTHING = 0.12;
-const CLOCK_OFFSET_SMOOTHING = 0.15;
 
 class SoundBoard {
   constructor() {
@@ -136,13 +134,6 @@ function pushMessage(text) {
   state.messageLog = [text, ...state.messageLog].slice(0, 8);
 }
 
-function currentServerNow() {
-  if (!state.lastServerNowMs || !state.lastPerfNowMs) {
-    return Date.now() + state.clockOffsetMs;
-  }
-  return state.lastServerNowMs + (performance.now() - state.lastPerfNowMs);
-}
-
 function currentPlaybackServerNow() {
   const playback = state.playback;
   if (
@@ -155,7 +146,7 @@ function currentPlaybackServerNow() {
     const clampedElapsed = Math.max(0, Math.min(elapsed, playback.durationMs || elapsed));
     return playback.serverStartMs + clampedElapsed;
   }
-  return currentServerNow();
+  return state.playback.serverStartMs || 0;
 }
 
 function getPlayViewport() {
@@ -491,10 +482,10 @@ function byId(id) {
 }
 
 function getPhaseTimeRemaining() {
-  if (!state.snapshot?.room.phaseEndsAt) {
+  if (!state.phaseLocalStartMs || !state.phaseDurationMs) {
     return null;
   }
-  return Math.max(0, state.snapshot.room.phaseEndsAt - currentServerNow());
+  return Math.max(0, state.phaseLocalStartMs + state.phaseDurationMs - performance.now());
 }
 
 function formatSeconds(ms) {
@@ -695,38 +686,25 @@ async function joinRoom(roomCode) {
   startPolling();
 }
 
-function startPolling() {
-  if (state.pollTimer) {
-    clearInterval(state.pollTimer);
-  }
-  pollState();
-  state.pollTimer = setInterval(pollState, 250);
-}
-
-async function pollState() {
-  if (!state.token) {
-    return;
-  }
-  try {
-    const snapshot = await api(`/api/state?token=${encodeURIComponent(state.token)}`);
-    const measuredOffset = snapshot.serverNow - Date.now();
-    if (!state.snapshot) {
-      state.clockOffsetMs = measuredOffset;
-    } else {
-      state.clockOffsetMs =
-        state.clockOffsetMs * (1 - CLOCK_OFFSET_SMOOTHING) +
-        measuredOffset * CLOCK_OFFSET_SMOOTHING;
+async function startPolling() {
+  if (state.longPollActive) return;
+  state.longPollActive = true;
+  let lastVersion = -1;
+  while (state.token) {
+    try {
+      const suffix = lastVersion >= 0 ? `&version=${lastVersion}` : "";
+      const snapshot = await api(`/api/state?token=${encodeURIComponent(state.token)}${suffix}`);
+      lastVersion = typeof snapshot.version === "number" ? snapshot.version : lastVersion;
+      handleSnapshot(snapshot);
+    } catch (error) {
+      ui.menu.classList.remove("hidden");
+      ui.hud.classList.add("hidden");
+      ui.menuMessage.textContent = error.message;
+      state.longPollActive = false;
+      return;
     }
-    state.lastServerNowMs = snapshot.serverNow;
-    state.lastPerfNowMs = performance.now();
-    state.lastServerNowMs = snapshot.serverNow;
-    state.lastPerfNowMs = performance.now();
-    handleSnapshot(snapshot);
-  } catch (error) {
-    ui.menu.classList.remove("hidden");
-    ui.hud.classList.add("hidden");
-    ui.menuMessage.textContent = error.message;
   }
+  state.longPollActive = false;
 }
 
 function sameSummaryKey(summary) {
@@ -751,6 +729,8 @@ function handleSnapshot(snapshot) {
     : snapshot.room.phase;
 
   if (snapshot.room.phase !== state.lastPhase) {
+    state.phaseLocalStartMs = performance.now();
+    state.phaseDurationMs = snapshot.room.phaseDurationMs || null;
     if (snapshot.room.phase === "movement" && snapshot.match?.movement) {
       state.playback = {
         phase: "movement",
@@ -813,6 +793,7 @@ function handleSnapshot(snapshot) {
     state.inputStep = "move";
     state.draftMoveTarget = snapshot.planning?.plan?.moveTarget || null;
     state.draftAimDir = snapshot.planning?.plan?.aimDir || snapshot.you.lastAimDir || { x: 0, y: -1 };
+    state.finalCommitSent = false;
   }
 
   if (previous && previous.players && snapshot.players) {
@@ -840,16 +821,6 @@ function handleSnapshot(snapshot) {
     } else {
       state.pendingPlanSave = null;
     }
-    if (remaining !== null && remaining <= 0 && !state.finalCommitSent) {
-      state.finalCommitSent = true;
-      if (state.dragPlan.active) {
-        endPlanDrag();
-      } else {
-        forceCommitCurrentDraft();
-      }
-    }
-  } else if (state.finalCommitSent) {
-    state.finalCommitSent = false;
   }
 
   ensureCamera();
@@ -1206,7 +1177,20 @@ function render() {
   ctx.restore();
   drawSpectatorHint();
   drawOverlayText();
+  renderHud();
+  checkPlanningTimeout();
   state.animationFrame = requestAnimationFrame(render);
+}
+
+function checkPlanningTimeout() {
+  if (!state.snapshot || state.snapshot.room.phase !== "planning") return;
+  const remaining = getPhaseTimeRemaining();
+  if (remaining === null || remaining > 0 || state.finalCommitSent) return;
+  state.finalCommitSent = true;
+  if (state.dragPlan.active) {
+    endPlanDrag();
+  }
+  forceCommitCurrentDraft();
 }
 
 function getCanvasPoint(event) {

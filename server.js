@@ -1012,8 +1012,37 @@ function createRoom(code) {
     match: null,
     round: null,
     lastRoundSummary: null,
-    lastMatchSummary: null
+    lastMatchSummary: null,
+    version: 0,
+    waiters: []
   };
+}
+
+function notifyRoomChange(room) {
+  if (!room) return;
+  room.version += 1;
+  const waiters = room.waiters;
+  room.waiters = [];
+  for (const waiter of waiters) {
+    clearTimeout(waiter.timer);
+    waiter.resolve();
+  }
+}
+
+function waitForRoomVersion(room, sinceVersion, timeoutMs) {
+  return new Promise((resolve) => {
+    if (!room || room.version > sinceVersion) {
+      resolve();
+      return;
+    }
+    const waiter = { resolve, timer: null };
+    waiter.timer = setTimeout(() => {
+      const idx = room.waiters.indexOf(waiter);
+      if (idx >= 0) room.waiters.splice(idx, 1);
+      resolve();
+    }, timeoutMs);
+    room.waiters.push(waiter);
+  });
 }
 
 function connectedPlayers(room) {
@@ -1037,8 +1066,10 @@ function setPhase(room, phase, durationMs, label) {
   const current = nowMs();
   room.phase = phase;
   room.phaseStartedAt = current;
+  room.phaseDurationMs = durationMs;
   room.phaseEndsAt = durationMs === null ? null : current + durationMs;
   room.phaseLabel = label;
+  notifyRoomChange(room);
 }
 
 function generateGuestName(room) {
@@ -1826,7 +1857,6 @@ function buildState(player) {
   const room = rooms.get(player.roomCode);
   ensureHost(room);
   const players = Array.from(room.players.values());
-  const phaseEndsInMs = room.phaseEndsAt ? Math.max(0, room.phaseEndsAt - nowMs()) : null;
 
   return {
     ok: true,
@@ -1845,8 +1875,7 @@ function buildState(player) {
       settings: room.settings,
       phase: room.phase,
       phaseLabel: room.phaseLabel,
-      phaseEndsAt: room.phaseEndsAt,
-      phaseEndsInMs,
+      phaseDurationMs: room.phaseDurationMs || null,
       connectedCount: connectedPlayers(room).length,
       playerCount: players.length,
       minPlayers: CONFIG.minPlayers,
@@ -2026,6 +2055,7 @@ async function handleJoin(request, response) {
     playerId: player.id
   });
 
+  notifyRoomChange(room);
   json(response, 200, {
     ok: true,
     token: player.token,
@@ -2099,6 +2129,7 @@ async function handleLeave(request, response) {
   player.connected = false;
   player.disconnected = true;
   player.lastSeenAt = nowMs() - CONFIG.pollGraceMs - 1;
+  notifyRoomChange(rooms.get(player.roomCode));
   json(response, 200, { ok: true });
 }
 
@@ -2138,8 +2169,10 @@ async function handleStart(request, response) {
   json(response, 200, { ok: true });
 }
 
-function handleState(request, response, urlObject) {
+async function handleState(request, response, urlObject) {
   const token = urlObject.searchParams.get("token");
+  const sinceVersionRaw = urlObject.searchParams.get("version");
+  const sinceVersion = sinceVersionRaw === null ? -1 : Number(sinceVersionRaw);
   const player = getPlayerByToken(token);
   if (!player) {
     json(response, 401, { ok: false, error: "Invalid session." });
@@ -2148,7 +2181,15 @@ function handleState(request, response, urlObject) {
   player.lastSeenAt = nowMs();
   player.connected = true;
   player.disconnected = false;
+
+  const room = rooms.get(player.roomCode);
+  if (room && Number.isFinite(sinceVersion) && sinceVersion >= 0) {
+    await waitForRoomVersion(room, sinceVersion, 25000);
+    player.lastSeenAt = nowMs();
+  }
+
   const state = buildState(player);
+  state.version = room ? room.version : 0;
   json(response, 200, state);
 }
 
@@ -2156,7 +2197,7 @@ const server = http.createServer(async (request, response) => {
   try {
     const urlObject = new URL(request.url, `http://${request.headers.host}`);
     if (request.method === "GET" && urlObject.pathname === "/api/state") {
-      handleState(request, response, urlObject);
+      await handleState(request, response, urlObject);
       return;
     }
 
