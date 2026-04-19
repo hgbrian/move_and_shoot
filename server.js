@@ -13,14 +13,14 @@ const CONFIG = {
   totalRounds: 3,
   lobbyCountdownMs: 3_000,
   preRoundCountdownMs: 3_000,
-  planningMs: 8_000,
+  planningMs: 4_000,
   movementMs: 2_000,
   roundEndPauseMs: 3_000,
   screenSize: 1200,
   defaultMapGridSize: 2,
   defaultBuildingCount: 30,
   playerRadius: 18,
-  moveRange: 360,
+  moveRange: 720,
   bulletSpeed: 1600,
   planAimPreviewLength: 90,
   buildingAngles: [0, 45, 90, 135],
@@ -254,6 +254,137 @@ function pointBlockedByBuilding(point, radius, map) {
   return false;
 }
 
+function worldCollisionNormal(point, radius, map) {
+  if (point.x < radius) {
+    return { x: 1, y: 0 };
+  }
+  if (point.x > map.width - radius) {
+    return { x: -1, y: 0 };
+  }
+  if (point.y < radius) {
+    return { x: 0, y: 1 };
+  }
+  if (point.y > map.height - radius) {
+    return { x: 0, y: -1 };
+  }
+  return null;
+}
+
+function rotateLocalVectorToWorld(vector, building) {
+  const cos = Math.cos(building.angleRad);
+  const sin = Math.sin(building.angleRad);
+  return {
+    x: vector.x * cos - vector.y * sin,
+    y: vector.x * sin + vector.y * cos
+  };
+}
+
+function buildingCollisionNormal(point, radius, building) {
+  const local = rotateIntoLocal(point, building);
+  const limitX = building.halfWidth + radius;
+  const limitY = building.halfHeight + radius;
+  if (Math.abs(local.x) > limitX || Math.abs(local.y) > limitY) {
+    return null;
+  }
+
+  const penetrationX = limitX - Math.abs(local.x);
+  const penetrationY = limitY - Math.abs(local.y);
+  let normalLocal;
+  if (penetrationX < penetrationY) {
+    normalLocal = { x: local.x >= 0 ? 1 : -1, y: 0 };
+  } else {
+    normalLocal = { x: 0, y: local.y >= 0 ? 1 : -1 };
+  }
+  return normalizeVector(rotateLocalVectorToWorld(normalLocal, building), normalLocal);
+}
+
+function collisionNormalsAtPoint(point, radius, map) {
+  const normals = [];
+  const worldNormal = worldCollisionNormal(point, radius, map);
+  if (worldNormal) {
+    normals.push(worldNormal);
+  }
+  for (const building of map.buildings) {
+    const normal = buildingCollisionNormal(point, radius, building);
+    if (normal) {
+      normals.push(normal);
+    }
+  }
+  return normals;
+}
+
+function pointClearForCircle(point, radius, map) {
+  return insideWorld(point, radius, map) && !pointBlockedByBuilding(point, radius, map);
+}
+
+function moveCircleWithSliding(current, delta, radius, map) {
+  if (!delta.x && !delta.y) {
+    return { x: current.x, y: current.y };
+  }
+
+  let adjustedDelta = { x: delta.x, y: delta.y };
+  for (let iteration = 0; iteration < 4; iteration += 1) {
+    const candidate = add(current, adjustedDelta);
+    const normals = collisionNormalsAtPoint(candidate, radius, map);
+    if (!normals.length) {
+      return candidate;
+    }
+
+    let changed = false;
+    for (const normal of normals) {
+      const dot = adjustedDelta.x * normal.x + adjustedDelta.y * normal.y;
+      if (dot < 0) {
+        adjustedDelta = subtract(adjustedDelta, scale(normal, dot));
+        changed = true;
+      }
+    }
+
+    if (!changed) {
+      break;
+    }
+  }
+
+  if (pointClearForCircle(add(current, adjustedDelta), radius, map)) {
+    return add(current, adjustedDelta);
+  }
+
+  let low = 0;
+  let high = 1;
+  for (let i = 0; i < 10; i += 1) {
+    const mid = (low + high) / 2;
+    const probe = add(current, scale(adjustedDelta, mid));
+    if (pointClearForCircle(probe, radius, map)) {
+      low = mid;
+    } else {
+      high = mid;
+    }
+  }
+  return add(current, scale(adjustedDelta, low));
+}
+
+function interpolateMotionEntry(entry, elapsedMs) {
+  if (!entry?.samples?.length) {
+    return entry?.end ? { x: entry.end.x, y: entry.end.y } : null;
+  }
+  if (elapsedMs <= 0) {
+    return { x: entry.samples[0].x, y: entry.samples[0].y };
+  }
+
+  const samples = entry.samples;
+  for (let i = 1; i < samples.length; i += 1) {
+    const previous = samples[i - 1];
+    const current = samples[i];
+    if (elapsedMs <= current.timeMs) {
+      const duration = Math.max(current.timeMs - previous.timeMs, 1);
+      const t = clamp((elapsedMs - previous.timeMs) / duration, 0, 1);
+      return lerpPoint(previous, current, t);
+    }
+  }
+
+  const last = samples[samples.length - 1];
+  return { x: last.x, y: last.y };
+}
+
 function insideWorld(point, radius, map) {
   return (
     point.x >= radius &&
@@ -396,8 +527,7 @@ function currentMovementPosition(room, player, timestampMs = nowMs()) {
 
   const activeDuration = Math.max(entry.haltedAtMs || movement.durationMs, 1);
   const elapsed = clamp(timestampMs - movement.startedAt, 0, activeDuration);
-  const t = clamp(elapsed / activeDuration, 0, 1);
-  return lerpPoint(entry.start, entry.end, t);
+  return interpolateMotionEntry(entry, elapsed) || { x: player.x, y: player.y };
 }
 
 function rayCircleHitDistance(origin, direction, center, radius) {
@@ -762,7 +892,8 @@ function simulateMovement(room, actionMap) {
         start: { x: player.x, y: player.y },
         end: { x: player.x, y: player.y },
         haltedAtMs: 0,
-        hadAction: false
+        hadAction: false,
+        samples: [{ timeMs: 0, x: player.x, y: player.y }]
       }
     ])
   );
@@ -802,7 +933,9 @@ function simulateMovement(room, actionMap) {
         proposed[player.id] = { ...state.current };
         continue;
       }
-      proposed[player.id] = lerpPoint(results[player.id].start, state.target, stepT1);
+      const idealNext = lerpPoint(results[player.id].start, state.target, stepT1);
+      const desiredDelta = subtract(idealNext, state.current);
+      proposed[player.id] = moveCircleWithSliding(state.current, desiredDelta, radius, map);
     }
 
     const collisions = new Set();
@@ -834,12 +967,32 @@ function simulateMovement(room, actionMap) {
       if (collisions.has(player.id)) {
         state.halted = true;
         results[player.id].haltedAtMs = Math.round(stepT0 * CONFIG.movementMs);
+        const lastSample = results[player.id].samples[results[player.id].samples.length - 1];
+        if (lastSample.timeMs !== results[player.id].haltedAtMs) {
+          results[player.id].samples.push({
+            timeMs: results[player.id].haltedAtMs,
+            x: state.current.x,
+            y: state.current.y
+          });
+        }
         continue;
       }
 
       state.current = proposed[player.id];
       results[player.id].end = { ...state.current };
       results[player.id].haltedAtMs = Math.round(stepT1 * CONFIG.movementMs);
+      const timeMs = results[player.id].haltedAtMs;
+      const lastSample = results[player.id].samples[results[player.id].samples.length - 1];
+      if (
+        Math.hypot(lastSample.x - state.current.x, lastSample.y - state.current.y) > 0.5 ||
+        lastSample.timeMs !== timeMs
+      ) {
+        results[player.id].samples.push({
+          timeMs,
+          x: state.current.x,
+          y: state.current.y
+        });
+      }
     }
   }
 
@@ -863,12 +1016,10 @@ function buildActionMap(room) {
       continue;
     }
     const normalizedTarget = normalizedMoveTarget(player, plan.moveTarget);
-    const reachable = furthestReachablePoint(
-      { x: player.x, y: player.y },
-      normalizedTarget,
-      CONFIG.playerRadius,
-      room.round.map
-    );
+    const reachable = {
+      x: clamp(normalizedTarget.x, CONFIG.playerRadius, room.round.map.width - CONFIG.playerRadius),
+      y: clamp(normalizedTarget.y, CONFIG.playerRadius, room.round.map.height - CONFIG.playerRadius)
+    };
     const aimDir = normalizeVector(plan.aimDir, player.lastAimDir);
     actionMap[player.id] = {
       moveEnd: reachable,

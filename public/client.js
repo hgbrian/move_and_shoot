@@ -188,14 +188,33 @@ function getAnimatedPlayerPosition(player) {
     return { x: player.x, y: player.y };
   }
 
+  const interpolateMovementEntry = (movementEntry, elapsedMs) => {
+    if (!movementEntry?.samples?.length) {
+      return { x: movementEntry.end.x, y: movementEntry.end.y };
+    }
+    if (elapsedMs <= 0) {
+      return { x: movementEntry.samples[0].x, y: movementEntry.samples[0].y };
+    }
+    for (let i = 1; i < movementEntry.samples.length; i += 1) {
+      const previous = movementEntry.samples[i - 1];
+      const current = movementEntry.samples[i];
+      if (elapsedMs <= current.timeMs) {
+        const duration = Math.max(current.timeMs - previous.timeMs, 1);
+        const t = clamp((elapsedMs - previous.timeMs) / duration, 0, 1);
+        return lerpPoint(previous, current, t);
+      }
+    }
+    const last = movementEntry.samples[movementEntry.samples.length - 1];
+    return { x: last.x, y: last.y };
+  };
+
   if (state.snapshot.room.phase !== "movement") {
-    return { x: entry.end.x, y: entry.end.y };
+    return interpolateMovementEntry(entry, entry.haltedAtMs || movement.durationMs);
   }
 
   const elapsed = currentServerNow() - movement.startedAt;
   const activeDuration = Math.max(entry.haltedAtMs || movement.durationMs, 1);
-  const movementT = clamp(elapsed / activeDuration, 0, 1);
-  return lerpPoint(entry.start, entry.end, movementT);
+  return interpolateMovementEntry(entry, clamp(elapsed, 0, activeDuration));
 }
 
 function getCameraTarget() {
@@ -555,11 +574,17 @@ function drawBullets() {
     };
     const head = worldToScreen(currentPoint);
     const tail = worldToScreen({
-      x: currentPoint.x - bullet.direction.x * 48,
-      y: currentPoint.y - bullet.direction.y * 48
+      x: currentPoint.x - bullet.direction.x * 64,
+      y: currentPoint.y - bullet.direction.y * 64
     });
-    ctx.strokeStyle = "rgba(255, 244, 196, 0.9)";
-    ctx.lineWidth = 4;
+    ctx.strokeStyle = "rgba(24, 12, 6, 0.96)";
+    ctx.lineWidth = 6;
+    ctx.beginPath();
+    ctx.moveTo(tail.x, tail.y);
+    ctx.lineTo(head.x, head.y);
+    ctx.stroke();
+    ctx.strokeStyle = "rgba(214, 120, 77, 0.95)";
+    ctx.lineWidth = 2.5;
     ctx.beginPath();
     ctx.moveTo(tail.x, tail.y);
     ctx.lineTo(head.x, head.y);
@@ -888,7 +913,7 @@ ui.createRoomButton.addEventListener("click", async () => {
   sounds.unlock();
   ui.menuMessage.textContent = "Creating room...";
   try {
-    await joinRoom("");
+    await joinRoom(ui.roomCodeInput.value);
   } catch (error) {
     ui.menuMessage.textContent = error.message;
   }
