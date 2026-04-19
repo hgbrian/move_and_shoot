@@ -871,8 +871,8 @@ function renderHud() {
   ui.turnLabel.textContent = state.snapshot.match.active
     ? String(state.snapshot.match.turnNumber || "-")
     : "-";
-  ui.readyLabel.textContent = state.snapshot.planning?.ready
-    ? "Locked In"
+  ui.readyLabel.textContent = state.draftMoveTarget && state.snapshot.room.phase === "planning"
+    ? "Plan set"
     : state.snapshot.you.alive
       ? "Planning"
       : "Spectating";
@@ -1247,31 +1247,17 @@ function updatePlanDraftFromScreenPoint(point, mode) {
   return true;
 }
 
-async function commitCurrentDraft(mode) {
+function commitCurrentDraft(mode) {
   if (!state.snapshot?.you.alive || state.snapshot.room.phase !== "planning") {
     return;
   }
-  const you = byId(state.snapshot.you.id) || state.snapshot.you;
   if (mode === "move") {
     state.inputStep = "aim";
-    const moveTarget = state.draftMoveTarget || { x: you.x, y: you.y };
-    await savePlan({
-      moveTarget,
-      aimDir: state.draftAimDir || state.snapshot.planning?.plan?.aimDir || state.snapshot.you.lastAimDir
-    });
-    pushMessage("Move target set. Drag again to aim.");
-    return;
+    pushMessage("Move target set. Drag to aim.");
+  } else {
+    state.inputStep = "move";
+    pushMessage("Aim set.");
   }
-  state.inputStep = "move";
-  const moveTarget =
-    state.draftMoveTarget ||
-    state.snapshot.planning?.plan?.moveTarget ||
-    { x: you.x, y: you.y };
-  await savePlan({
-    moveTarget,
-    aimDir: state.draftAimDir || state.snapshot.you.lastAimDir
-  });
-  pushMessage("Plan updated.");
 }
 
 function beginPlanDrag(point, pointerType) {
@@ -1315,7 +1301,7 @@ async function forceCommitCurrentDraft() {
   }
 }
 
-async function endPlanDrag() {
+function endPlanDrag() {
   if (!state.dragPlan.active) {
     return;
   }
@@ -1323,11 +1309,7 @@ async function endPlanDrag() {
   state.dragPlan.active = false;
   state.dragPlan.mode = "";
   state.dragPlan.pointerType = "";
-  try {
-    await commitCurrentDraft(mode);
-  } catch (error) {
-    pushMessage(error.message);
-  }
+  commitCurrentDraft(mode);
 }
 
 async function savePlan(plan) {
