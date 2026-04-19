@@ -14,7 +14,7 @@ const CONFIG = {
   lobbyCountdownMs: 1_000,
   preRoundCountdownMs: 1_000,
   planningMs: 5_000,
-  planningGraceMs: 500,
+  planningMaxWaitMs: 3_000,
   movementMs: 2_000,
   roundEndPauseMs: 3_000,
   screenSize: 1200,
@@ -1194,6 +1194,7 @@ function resetPlayerForRound(player, spawnPoint) {
   player.roundDeathAtMs = null;
   player.lastAimDir = { x: 0, y: -1 };
   player.plan = createFreshPlan(player);
+  player.planFinal = false;
 }
 
 function beginLobbyCountdown(room) {
@@ -1292,6 +1293,7 @@ function startPlanning(room) {
       continue;
     }
     player.plan = createFreshPlan(player);
+    player.planFinal = false;
     room.round.currentTurn.plans[player.id] = player.plan;
     room.round.planningVisibility[player.id] = visibleEnemiesForPlayer(room, player.id);
   }
@@ -1730,9 +1732,16 @@ function updateRoom(room) {
     return;
   }
 
-  if (room.phase === "planning" && room.phaseEndsAt && now >= room.phaseEndsAt + CONFIG.planningGraceMs) {
-    beginMovement(room);
-    return;
+  if (room.phase === "planning" && room.phaseEndsAt) {
+    const participants = room.match.participantIds
+      .map((id) => room.players.get(id))
+      .filter((p) => p && p.roundAlive && !p.disconnected);
+    const allReady = participants.length > 0 && participants.every((p) => p.planFinal);
+    const timedOut = now >= room.phaseEndsAt + CONFIG.planningMaxWaitMs;
+    if (allReady || timedOut) {
+      beginMovement(room);
+      return;
+    }
   }
 
   if (room.phase === "movement" && room.phaseEndsAt && now >= room.phaseEndsAt) {
@@ -2070,11 +2079,14 @@ async function handlePlan(request, response) {
   }
 
   player.plan = nextPlan;
+  if (body.final === true) {
+    player.planFinal = true;
+  }
   if (room.round.currentTurn) {
     room.round.currentTurn.plans[player.id] = nextPlan;
   }
 
-  json(response, 200, { ok: true, plan: nextPlan });
+  json(response, 200, { ok: true, plan: nextPlan, final: !!player.planFinal });
 }
 
 async function handleLeave(request, response) {

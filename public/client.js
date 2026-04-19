@@ -840,7 +840,7 @@ function handleSnapshot(snapshot) {
     } else {
       state.pendingPlanSave = null;
     }
-    if (remaining !== null && remaining <= 250 && !state.finalCommitSent) {
+    if (remaining !== null && remaining <= 0 && !state.finalCommitSent) {
       state.finalCommitSent = true;
       if (state.dragPlan.active) {
         endPlanDrag();
@@ -1295,7 +1295,7 @@ async function forceCommitCurrentDraft() {
     state.snapshot.you.lastAimDir ||
     { x: 0, y: -1 };
   try {
-    await savePlan({ moveTarget, aimDir });
+    await savePlan({ moveTarget, aimDir, final: true });
   } catch (error) {
     // silent — best-effort end-of-phase commit
   }
@@ -1321,7 +1321,8 @@ async function savePlan(plan) {
     body: {
       token: state.token,
       moveTarget: plan.moveTarget,
-      aimDir: plan.aimDir
+      aimDir: plan.aimDir,
+      final: !!plan.final
     }
   });
 }
