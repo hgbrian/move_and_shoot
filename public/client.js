@@ -6,6 +6,7 @@ const ui = {
   hud: document.getElementById("hud"),
   playerNameInput: document.getElementById("player-name-input"),
   mapSizeInput: document.getElementById("map-size-input"),
+  totalRoundsInput: document.getElementById("total-rounds-input"),
   roomCodeInput: document.getElementById("room-code-input"),
   createRoomButton: document.getElementById("create-room-button"),
   joinRoomButton: document.getElementById("join-room-button"),
@@ -685,6 +686,7 @@ async function joinRoom(roomCode, options = {}) {
     payload.name = name;
   }
   payload.mapGridSize = Number(ui.mapSizeInput.value) || 2;
+  payload.totalRounds = Number(ui.totalRoundsInput.value) || 3;
   if (options.mode === "br") {
     payload.mode = "br";
   }

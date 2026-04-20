@@ -1912,7 +1912,7 @@ function updateRoom(room) {
   }
 
   if (room.phase === "round_end" && room.phaseEndsAt && now >= room.phaseEndsAt) {
-    if (room.match.currentRoundNumber >= CONFIG.totalRounds) {
+    if (room.match.currentRoundNumber >= (room.settings.totalRounds || CONFIG.totalRounds)) {
       finishMatch(room);
     } else {
       startRound(room);
@@ -2033,7 +2033,7 @@ function buildState(player) {
           active: true,
           mode: room.mode,
           currentRound: room.match.currentRoundNumber,
-          totalRounds: room.mode === "br" ? null : CONFIG.totalRounds,
+          totalRounds: room.mode === "br" ? null : (room.settings.totalRounds || CONFIG.totalRounds),
           turnNumber: room.round ? room.round.turnNumber : 0,
           participantIds: room.match.participantIds,
           kills: room.match.kills || null,
@@ -2161,12 +2161,15 @@ async function handleJoin(request, response) {
   if (!room) {
     const code = desiredCode || generateRoomCode();
     room = createRoom(code, requestedMode);
+    const rawRounds = Number(body.totalRounds);
+    const totalRounds = [1, 3, 5, 7].includes(rawRounds) ? rawRounds : CONFIG.totalRounds;
     room.settings = {
       mapGridSize:
         requestedMode === "br"
           ? CONFIG.brMapGridSize
           : requestedMapGridSize || CONFIG.defaultMapGridSize,
-      killTarget: requestedMode === "br" ? CONFIG.brKillTarget : 0
+      killTarget: requestedMode === "br" ? CONFIG.brKillTarget : 0,
+      totalRounds: requestedMode === "br" ? null : totalRounds
     };
     rooms.set(code, room);
   }
@@ -2376,7 +2379,7 @@ async function handleState(request, response, urlObject) {
 
   const room = rooms.get(player.roomCode);
   if (room && Number.isFinite(sinceVersion) && sinceVersion >= 0) {
-    await waitForRoomVersion(room, sinceVersion, 25000);
+    await waitForRoomVersion(room, sinceVersion, 6000);
     player.lastSeenAt = nowMs();
   }
 
