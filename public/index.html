@@ -60,23 +60,23 @@
             <div class="label">Timer</div>
             <div id="timer-label" class="value">--</div>
           </div>
-          <div>
+          <div class="phone-hide">
             <div class="label">Round</div>
             <div id="round-label" class="value">- / 3</div>
           </div>
-          <div>
+          <div class="phone-hide">
             <div class="label">Turn</div>
             <div id="turn-label" class="value">-</div>
           </div>
-          <div>
+          <div class="phone-hide">
             <div class="label">Status</div>
             <div id="ready-label" class="value">Planning</div>
           </div>
-          <div>
-            <div class="label">Score</div>
+          <div id="score-tile" class="clickable-tile">
+            <div class="label">Score <span class="toggle-caret">▾</span></div>
             <div id="score-label" class="value">0W</div>
           </div>
-          <div>
+          <div class="phone-hide">
             <div class="label">Players</div>
             <div id="players-label" class="value">0/0</div>
           </div>
@@ -84,6 +84,10 @@
             <button id="start-game-button" class="primary" type="button">Start Game</button>
             <button id="start-test-button" type="button">1P Test</button>
           </div>
+        </div>
+        <div id="leaderboard" class="panel hidden">
+          <div class="leaderboard-title">Leaderboard</div>
+          <ol id="leaderboard-list"></ol>
         </div>
       </section>
 

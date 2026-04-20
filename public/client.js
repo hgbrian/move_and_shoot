@@ -22,7 +22,10 @@ const ui = {
   startTestButton: document.getElementById("start-test-button"),
   topActionSlot: document.getElementById("top-action-slot"),
   createBrButton: document.getElementById("create-br-button"),
-  killTargetInput: document.getElementById("kill-target-input")
+  killTargetInput: document.getElementById("kill-target-input"),
+  scoreTile: document.getElementById("score-tile"),
+  leaderboard: document.getElementById("leaderboard"),
+  leaderboardList: document.getElementById("leaderboard-list")
 };
 
 const state = {
@@ -885,8 +888,7 @@ function renderHud() {
         ? "Need 2 Players"
         : "Start Game";
   }
-  const showRespawn = isBr && state.snapshot.match?.active && !state.snapshot.you.alive;
-  ui.respawnSlot.classList.toggle("hidden", !showRespawn);
+  renderLeaderboard();
 }
 
 function drawBackground(map, viewport) {
@@ -1540,6 +1542,41 @@ ui.joinRoomButton.addEventListener("click", async () => {
     ui.menuMessage.textContent = error.message;
   }
 });
+
+ui.scoreTile.addEventListener("click", () => {
+  state.leaderboardOpen = !state.leaderboardOpen;
+  renderLeaderboard();
+});
+
+function renderLeaderboard() {
+  const open = !!state.leaderboardOpen && state.snapshot?.match?.active;
+  ui.leaderboard.classList.toggle("hidden", !open);
+  ui.scoreTile.classList.toggle("open", open);
+  if (!open || !state.snapshot) return;
+  const isBr = state.snapshot.room.mode === "br";
+  const players = state.snapshot.players || [];
+  const rows = players.map((p) => ({
+    id: p.id,
+    name: p.name,
+    score: isBr ? (state.snapshot.match.kills?.[p.id] ?? 0) : (p.wins || 0),
+    alive: p.alive,
+    connected: p.connected
+  }));
+  rows.sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
+  const myId = state.snapshot.you.id;
+  ui.leaderboardList.innerHTML = rows
+    .map((r) => {
+      const cls = r.id === myId ? "you" : "";
+      const dim = !r.connected || (isBr && !r.alive) ? " style=\"opacity:0.5\"" : "";
+      const suffix = isBr ? "K" : "W";
+      return `<li class="${cls}"${dim}><span class="name">${escapeHtml(r.name)}</span><span class="score">${r.score}${suffix}</span></li>`;
+    })
+    .join("");
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
 
 ui.createBrButton.addEventListener("click", async () => {
   sounds.unlock();
