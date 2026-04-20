@@ -1,32 +1,48 @@
 const canvas = document.getElementById("game-canvas");
 const ctx = canvas.getContext("2d");
 
-const ui = {
-  menu: document.getElementById("menu"),
-  hud: document.getElementById("hud"),
-  playerNameInput: document.getElementById("player-name-input"),
-  mapSizeInput: document.getElementById("map-size-input"),
-  totalRoundsInput: document.getElementById("total-rounds-input"),
-  roomCodeInput: document.getElementById("room-code-input"),
-  createRoomButton: document.getElementById("create-room-button"),
-  joinRoomButton: document.getElementById("join-room-button"),
-  menuMessage: document.getElementById("menu-message"),
-  roomCodeLabel: document.getElementById("room-code-label"),
-  phaseLabel: document.getElementById("phase-label"),
-  timerLabel: document.getElementById("timer-label"),
-  roundLabel: document.getElementById("round-label"),
-  turnLabel: document.getElementById("turn-label"),
-  readyLabel: document.getElementById("ready-label"),
-  scoreLabel: document.getElementById("score-label"),
-  playersLabel: document.getElementById("players-label"),
-  startGameButton: document.getElementById("start-game-button"),
-  startTestButton: document.getElementById("start-test-button"),
-  topActionSlot: document.getElementById("top-action-slot"),
-  createBrButton: document.getElementById("create-br-button"),
-  scoreTile: document.getElementById("score-tile"),
-  leaderboard: document.getElementById("leaderboard"),
-  leaderboardList: document.getElementById("leaderboard-list")
+const UI_ELEMENTS = {
+  menu: "menu",
+  hud: "hud",
+  playerNameInput: "player-name-input",
+  mapSizeInput: "map-size-input",
+  totalRoundsInput: "total-rounds-input",
+  roomCodeInput: "room-code-input",
+  createRoomButton: "create-room-button",
+  joinRoomButton: "join-room-button",
+  menuMessage: "menu-message",
+  roomCodeLabel: "room-code-label",
+  phaseLabel: "phase-label",
+  timerLabel: "timer-label",
+  roundLabel: "round-label",
+  turnLabel: "turn-label",
+  readyLabel: "ready-label",
+  scoreLabel: "score-label",
+  playersLabel: "players-label",
+  startGameButton: "start-game-button",
+  startTestButton: "start-test-button",
+  topActionSlot: "top-action-slot",
+  createBrButton: "create-br-button",
+  scoreTile: "score-tile",
+  leaderboard: "leaderboard",
+  leaderboardList: "leaderboard-list"
 };
+
+const ui = Object.fromEntries(
+  Object.entries(UI_ELEMENTS).map(([key, id]) => [key, document.getElementById(id)])
+);
+
+for (const [key, el] of Object.entries(ui)) {
+  if (!el) console.warn(`[ui] missing element for "${key}" (id="${UI_ELEMENTS[key]}")`);
+}
+
+function bind(el, event, handler, opts) {
+  if (!el) {
+    console.warn(`[bind] missing element for ${event} handler`);
+    return;
+  }
+  el.addEventListener(event, handler, opts);
+}
 
 const state = {
   token: localStorage.getItem("move-and-shoot-token") || "",
@@ -1523,7 +1539,7 @@ window.addEventListener("beforeunload", () => {
   );
 });
 
-ui.createRoomButton.addEventListener("click", async () => {
+bind(ui.createRoomButton, "click", async () => {
   sounds.unlock();
   ui.menuMessage.textContent = "Creating room...";
   try {
@@ -1533,7 +1549,7 @@ ui.createRoomButton.addEventListener("click", async () => {
   }
 });
 
-ui.joinRoomButton.addEventListener("click", async () => {
+bind(ui.joinRoomButton, "click", async () => {
   sounds.unlock();
   ui.menuMessage.textContent = "Joining room...";
   try {
@@ -1543,7 +1559,7 @@ ui.joinRoomButton.addEventListener("click", async () => {
   }
 });
 
-ui.scoreTile.addEventListener("click", () => {
+bind(ui.scoreTile, "click", () => {
   state.leaderboardOpen = !state.leaderboardOpen;
   renderLeaderboard();
 });
@@ -1578,7 +1594,7 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
-ui.createBrButton.addEventListener("click", async () => {
+bind(ui.createBrButton, "click", async () => {
   sounds.unlock();
   ui.menuMessage.textContent = "Joining battle royale...";
   try {
@@ -1588,16 +1604,8 @@ ui.createBrButton.addEventListener("click", async () => {
   }
 });
 
-ui.respawnButton.addEventListener("click", async () => {
-  sounds.unlock();
-  try {
-    await api("/api/respawn", { method: "POST", body: { token: state.token } });
-  } catch (error) {
-    pushMessage(error.message);
-  }
-});
 
-ui.startGameButton.addEventListener("click", async () => {
+bind(ui.startGameButton, "click", async () => {
   sounds.unlock();
   try {
     await startGame();
@@ -1607,7 +1615,7 @@ ui.startGameButton.addEventListener("click", async () => {
   }
 });
 
-ui.startTestButton.addEventListener("click", async () => {
+bind(ui.startTestButton, "click", async () => {
   sounds.unlock();
   try {
     await startGame({ testMode: true });
@@ -1617,7 +1625,7 @@ ui.startTestButton.addEventListener("click", async () => {
   }
 });
 
-ui.roomCodeInput.addEventListener("input", () => {
+bind(ui.roomCodeInput, "input", () => {
   ui.roomCodeInput.value = ui.roomCodeInput.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 4);
 });
 
