@@ -204,6 +204,68 @@ button.primary {
   display: none !important;
 }
 
+.phase-banner {
+  position: absolute;
+  left: 50%;
+  top: 16px;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  pointer-events: none;
+  z-index: 11;
+}
+
+.phase-banner-text {
+  font-size: 1.1rem;
+  font-weight: 900;
+  letter-spacing: 0.22em;
+  padding: 6px 22px;
+  border-radius: 999px;
+  background: rgba(250, 246, 234, 0.92);
+  border: 2px solid currentColor;
+  box-shadow: 0 6px 18px rgba(42, 29, 15, 0.18);
+  transition: color 0.25s ease, background-color 0.25s ease;
+}
+
+.phase-banner-track {
+  width: 180px;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(27, 20, 13, 0.12);
+  overflow: hidden;
+}
+
+.phase-banner-fill {
+  height: 100%;
+  width: 0%;
+  background: currentColor;
+  transition: width 0.1s linear;
+}
+
+.phase-banner[data-phase="planning"] { color: #2d6a4f; }
+.phase-banner[data-phase="movement"] { color: #2c5b8a; }
+.phase-banner[data-phase="shooting"] { color: #a23e2f; }
+.phase-banner[data-phase="lobby_countdown"],
+.phase-banner[data-phase="round_countdown"],
+.phase-banner[data-phase="round_end"],
+.phase-banner[data-phase="match_end"],
+.phase-banner[data-phase="lobby"] { color: #665845; }
+
+@media (max-width: 640px) {
+  .phase-banner {
+    top: 60px;
+  }
+  .phase-banner-text {
+    font-size: 0.85rem;
+    padding: 4px 14px;
+  }
+  .phase-banner-track {
+    width: 140px;
+  }
+}
+
 .clickable-tile {
   cursor: pointer;
   user-select: none;

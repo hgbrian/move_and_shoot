@@ -25,7 +25,10 @@ const UI_ELEMENTS = {
   createBrButton: "create-br-button",
   scoreTile: "score-tile",
   leaderboard: "leaderboard",
-  leaderboardList: "leaderboard-list"
+  leaderboardList: "leaderboard-list",
+  phaseBanner: "phase-banner",
+  phaseBannerText: "phase-banner-text",
+  phaseBannerFill: "phase-banner-fill"
 };
 
 const ui = Object.fromEntries(
@@ -908,7 +911,7 @@ function renderHud() {
 }
 
 function drawBackground(map, viewport) {
-  ctx.fillStyle = "#ede2c8";
+  ctx.fillStyle = currentMapBgColor();
   ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
 
   const grid = 120 * (state.camera.zoom || 1);
@@ -1222,8 +1225,52 @@ function render() {
   drawSpectatorHint();
   drawOverlayText();
   renderHud();
+  renderPhaseBanner();
   checkPlanningTimeout();
   state.animationFrame = requestAnimationFrame(render);
+}
+
+const PHASE_LABELS = {
+  planning: "PLAN",
+  movement: "MOVE",
+  shooting: "SHOOT",
+  lobby: "LOBBY",
+  lobby_countdown: "STARTING",
+  round_countdown: "READY",
+  round_end: "ROUND END",
+  match_end: "MATCH END"
+};
+
+function renderPhaseBanner() {
+  const phase = state.snapshot?.room?.phase;
+  const active = !!state.snapshot?.match?.active || phase === "lobby_countdown" || phase === "round_countdown" || phase === "planning" || phase === "movement" || phase === "shooting";
+  if (!phase || !active) {
+    ui.phaseBanner.classList.add("hidden");
+    return;
+  }
+  ui.phaseBanner.classList.remove("hidden");
+  ui.phaseBanner.setAttribute("data-phase", phase);
+  ui.phaseBannerText.textContent = PHASE_LABELS[phase] || phase.toUpperCase();
+  const duration = state.phaseDurationMs;
+  const elapsed = state.phaseLocalStartMs ? performance.now() - state.phaseLocalStartMs : 0;
+  const fraction = duration && duration > 0 ? clamp(1 - elapsed / duration, 0, 1) : 0;
+  ui.phaseBannerFill.style.width = `${(fraction * 100).toFixed(1)}%`;
+}
+
+const PHASE_BG_COLORS = {
+  planning: "#ece9d6",
+  movement: "#e4e8ec",
+  shooting: "#ede0d8",
+  lobby: "#ede2c8",
+  lobby_countdown: "#ece5d0",
+  round_countdown: "#ece5d0",
+  round_end: "#ede0cb",
+  match_end: "#ede0cb"
+};
+
+function currentMapBgColor() {
+  const phase = state.snapshot?.room?.phase;
+  return PHASE_BG_COLORS[phase] || "#ede2c8";
 }
 
 function checkPlanningTimeout() {
