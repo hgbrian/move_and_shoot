@@ -22,7 +22,6 @@ const ui = {
   startTestButton: document.getElementById("start-test-button"),
   topActionSlot: document.getElementById("top-action-slot"),
   createBrButton: document.getElementById("create-br-button"),
-  killTargetInput: document.getElementById("kill-target-input"),
   scoreTile: document.getElementById("score-tile"),
   leaderboard: document.getElementById("leaderboard"),
   leaderboardList: document.getElementById("leaderboard-list")
@@ -688,7 +687,6 @@ async function joinRoom(roomCode, options = {}) {
   payload.mapGridSize = Number(ui.mapSizeInput.value) || 2;
   if (options.mode === "br") {
     payload.mode = "br";
-    payload.killTarget = Number(ui.killTargetInput.value) || 5;
   }
   const result = await api("/api/join", { method: "POST", body: payload });
   state.token = result.token;
@@ -1580,9 +1578,9 @@ function escapeHtml(s) {
 
 ui.createBrButton.addEventListener("click", async () => {
   sounds.unlock();
-  ui.menuMessage.textContent = "Creating battle royale...";
+  ui.menuMessage.textContent = "Joining battle royale...";
   try {
-    await joinRoom(ui.roomCodeInput.value, { mode: "br" });
+    await joinRoom("", { mode: "br" });
   } catch (error) {
     ui.menuMessage.textContent = error.message;
   }

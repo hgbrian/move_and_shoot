@@ -15,9 +15,9 @@ const CONFIG = {
   preRoundCountdownMs: 1_000,
   planningMs: 5_000,
   planningMaxWaitMs: 3_000,
-  brMaxPlayers: 200,
+  brMaxPlayers: 100,
   brMapGridSize: 10,
-  brRegenThreshold: 100,
+  brKillTarget: 10,
   movementMs: 2_000,
   roundEndPauseMs: 3_000,
   screenSize: 1200,
@@ -1900,8 +1900,6 @@ function updateRoom(room) {
       const top = Math.max(0, ...Object.values(room.match.kills || {}));
       if (top >= target) {
         finalizeBrMatch(room);
-      } else if (aliveCount >= CONFIG.brRegenThreshold) {
-        startBrRound(room);
       } else {
         startPlanning(room);
       }
@@ -2121,17 +2119,34 @@ function serveFile(requestPath, response) {
   });
 }
 
+function findAvailableBrRoom() {
+  for (const room of rooms.values()) {
+    if (room.mode === "br" && room.players.size < CONFIG.brMaxPlayers) {
+      return room;
+    }
+  }
+  return null;
+}
+
 async function handleJoin(request, response) {
   const body = await readJsonBody(request);
-  const desiredCode = sanitizeRoomCode(body.roomCode);
+  const requestedMode = body.mode === "br" ? "br" : "turn";
   const requestedName = sanitizePlayerName(body.name);
   const requestedMapGridSize = sanitizeMapGridSize(body.mapGridSize);
-  const requestedMode = body.mode === "br" ? "br" : "turn";
-  if (body.roomCode && desiredCode.length !== CONFIG.roomCodeLength) {
-    json(response, 400, { ok: false, error: "Room codes must be 4 characters." });
-    return;
+
+  let room = null;
+  let desiredCode = "";
+  if (requestedMode === "br") {
+    room = findAvailableBrRoom();
+    desiredCode = room ? room.code : "";
+  } else {
+    desiredCode = sanitizeRoomCode(body.roomCode);
+    if (body.roomCode && desiredCode.length !== CONFIG.roomCodeLength) {
+      json(response, 400, { ok: false, error: "Room codes must be 4 characters." });
+      return;
+    }
+    room = desiredCode ? rooms.get(desiredCode) : null;
   }
-  let room = desiredCode ? rooms.get(desiredCode) : null;
 
   if (
     room &&
@@ -2146,13 +2161,12 @@ async function handleJoin(request, response) {
   if (!room) {
     const code = desiredCode || generateRoomCode();
     room = createRoom(code, requestedMode);
-    const killTarget = Number(body.killTarget) === 10 ? 10 : 5;
     room.settings = {
       mapGridSize:
         requestedMode === "br"
           ? CONFIG.brMapGridSize
           : requestedMapGridSize || CONFIG.defaultMapGridSize,
-      killTarget
+      killTarget: requestedMode === "br" ? CONFIG.brKillTarget : 0
     };
     rooms.set(code, room);
   }
@@ -2420,7 +2434,7 @@ const server = http.createServer(async (request, response) => {
 setInterval(() => {
   for (const room of rooms.values()) {
     updateRoom(room);
-    if (room.players.size === 0) {
+    if (room.players.size === 0 && room.mode !== "br") {
       rooms.delete(room.code);
     }
   }
