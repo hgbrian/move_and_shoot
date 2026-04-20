@@ -20,7 +20,9 @@ const ui = {
   playersLabel: document.getElementById("players-label"),
   startGameButton: document.getElementById("start-game-button"),
   startTestButton: document.getElementById("start-test-button"),
-  topActionSlot: document.getElementById("top-action-slot")
+  topActionSlot: document.getElementById("top-action-slot"),
+  createBrButton: document.getElementById("create-br-button"),
+  killTargetInput: document.getElementById("kill-target-input")
 };
 
 const state = {
@@ -70,7 +72,11 @@ const state = {
   }
 };
 
-const FIXED_CAMERA_ZOOM = 0.624;
+const FIXED_VIEW_SHORT_SIDE = 900;
+function computeCameraZoom() {
+  const shortSide = Math.min(window.innerWidth, window.innerHeight);
+  return shortSide / FIXED_VIEW_SHORT_SIDE;
+}
 const CAMERA_FOLLOW_SMOOTHING = 0.2;
 const CAMERA_BULLET_SMOOTHING = 0.12;
 
@@ -288,10 +294,12 @@ function buildNavGridClient(map, radius) {
 }
 
 function getClientNav(map) {
-  const key = `${map.width}x${map.height}:${map.buildings.length}`;
+  const key = map.id || `${map.width}x${map.height}:${map.buildings.length}`;
   if (navCache.mapKey !== key) {
     navCache.mapKey = key;
     navCache.nav = buildNavGridClient(map, state.snapshot.config.playerRadius);
+    pathCache.key = "";
+    pathCache.path = null;
   }
   return navCache.nav;
 }
@@ -602,12 +610,12 @@ function ensureCamera() {
 
   const map = state.snapshot.match.map;
   if (!state.camera.zoom) {
-    state.camera.zoom = FIXED_CAMERA_ZOOM;
+    state.camera.zoom = computeCameraZoom();
   }
   if (state.snapshot.you.alive) {
     const target = getCameraTarget();
     const localShotBullet = getLocalShotBullet();
-    state.camera.zoom = FIXED_CAMERA_ZOOM;
+    state.camera.zoom = computeCameraZoom();
     state.camera.panX = 0;
     state.camera.panY = 0;
     const desiredX = clamp(target.x, 0, map.width);
@@ -626,7 +634,7 @@ function ensureCamera() {
       state.camera.y = lerp(state.camera.y, desiredY, CAMERA_FOLLOW_SMOOTHING);
     }
   } else {
-    state.camera.zoom = FIXED_CAMERA_ZOOM;
+    state.camera.zoom = computeCameraZoom();
     const desiredX = clamp(state.camera.x || map.width / 2, 0, map.width);
     const desiredY = clamp(state.camera.y || map.height / 2, 0, map.height);
     state.camera.x = lerp(state.camera.x || desiredX, desiredX, CAMERA_FOLLOW_SMOOTHING);
@@ -668,13 +676,17 @@ function api(path, options = {}) {
   });
 }
 
-async function joinRoom(roomCode) {
+async function joinRoom(roomCode, options = {}) {
   const name = ui.playerNameInput.value.trim().slice(0, 20);
   const payload = roomCode ? { roomCode } : {};
   if (name) {
     payload.name = name;
   }
   payload.mapGridSize = Number(ui.mapSizeInput.value) || 2;
+  if (options.mode === "br") {
+    payload.mode = "br";
+    payload.killTarget = Number(ui.killTargetInput.value) || 5;
+  }
   const result = await api("/api/join", { method: "POST", body: payload });
   state.token = result.token;
   state.roomCode = result.roomCode;
@@ -719,7 +731,7 @@ function handleSnapshot(snapshot) {
   state.snapshot = snapshot;
   state.roomCode = snapshot.room.code;
   if (snapshot.match?.map && snapshot.config) {
-    const key = `${snapshot.match.map.width}x${snapshot.match.map.height}:${snapshot.match.map.buildings.length}`;
+    const key = snapshot.match.map.id || `${snapshot.match.map.width}x${snapshot.match.map.height}:${snapshot.match.map.buildings.length}`;
     if (navCache.mapKey !== key) {
       navCache.mapKey = key;
       navCache.nav = buildNavGridClient(snapshot.match.map, snapshot.config.playerRadius);
@@ -851,19 +863,30 @@ function renderHud() {
       ? "Planning"
       : "Spectating";
   const leaderWins = Math.max(0, ...state.snapshot.players.map((player) => player.wins || 0));
-  ui.scoreLabel.textContent = `${state.snapshot.you.wins || 0}W / ${leaderWins}W`;
+  const isBr = state.snapshot.room.mode === "br";
+  if (isBr) {
+    const myKills = state.snapshot.match?.kills?.[state.snapshot.you.id] ?? 0;
+    const topKills = Math.max(0, ...Object.values(state.snapshot.match?.kills || { _: 0 }));
+    ui.scoreLabel.textContent = `${myKills}K / ${topKills}K`;
+  } else {
+    ui.scoreLabel.textContent = `${state.snapshot.you.wins || 0}W / ${leaderWins}W`;
+  }
   const connectedPlayers = state.snapshot.players.filter((player) => player.connected);
   const rosterNames = connectedPlayers.map((player) => player.name).join(", ") || "—";
   ui.playersLabel.textContent = `${connectedPlayers.length}/${state.snapshot.room.maxPlayers}: ${rosterNames}`;
   ui.topActionSlot.classList.toggle(
     "hidden",
-    !(state.snapshot.you.isHost && state.snapshot.room.phase === "lobby")
+    isBr || !(state.snapshot.you.isHost && state.snapshot.room.phase === "lobby")
   );
-  ui.startGameButton.disabled = state.snapshot.room.connectedCount < state.snapshot.room.minPlayers;
-  ui.startGameButton.textContent =
-    state.snapshot.room.connectedCount < state.snapshot.room.minPlayers
-      ? "Need 2 Players"
-      : "Start Game";
+  if (!isBr) {
+    ui.startGameButton.disabled = state.snapshot.room.connectedCount < state.snapshot.room.minPlayers;
+    ui.startGameButton.textContent =
+      state.snapshot.room.connectedCount < state.snapshot.room.minPlayers
+        ? "Need 2 Players"
+        : "Start Game";
+  }
+  const showRespawn = isBr && state.snapshot.match?.active && !state.snapshot.you.alive;
+  ui.respawnSlot.classList.toggle("hidden", !showRespawn);
 }
 
 function drawBackground(map, viewport) {
@@ -1515,6 +1538,25 @@ ui.joinRoomButton.addEventListener("click", async () => {
     await joinRoom(ui.roomCodeInput.value);
   } catch (error) {
     ui.menuMessage.textContent = error.message;
+  }
+});
+
+ui.createBrButton.addEventListener("click", async () => {
+  sounds.unlock();
+  ui.menuMessage.textContent = "Creating battle royale...";
+  try {
+    await joinRoom(ui.roomCodeInput.value, { mode: "br" });
+  } catch (error) {
+    ui.menuMessage.textContent = error.message;
+  }
+});
+
+ui.respawnButton.addEventListener("click", async () => {
+  sounds.unlock();
+  try {
+    await api("/api/respawn", { method: "POST", body: { token: state.token } });
+  } catch (error) {
+    pushMessage(error.message);
   }
 });
 

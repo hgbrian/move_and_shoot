@@ -24,11 +24,19 @@
           </select>
         </label>
         <label class="field">
+          <span>BR kill target <em>(new BR room only)</em></span>
+          <select id="kill-target-input">
+            <option value="5">First to 5</option>
+            <option value="10">First to 10</option>
+          </select>
+        </label>
+        <label class="field">
           <span>Room code</span>
           <input id="room-code-input" maxlength="4" autocomplete="off" placeholder="Enter 4-letter room code">
         </label>
         <div class="actions">
           <button id="create-room-button" class="primary">Create Room</button>
+          <button id="create-br-button">Create Battle Royale</button>
           <button id="join-room-button">Join Room</button>
         </div>
         <p id="menu-message" class="hint">Blank room code creates a new room.</p>
