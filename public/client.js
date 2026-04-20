@@ -315,9 +315,18 @@ function buildNavGridClient(map, radius) {
   return { cellSize, cols, rows, walkable, buildings };
 }
 
+function mapFingerprint(map) {
+  let hash = `${map.id || ""}:${map.width}x${map.height}:${map.buildings.length}`;
+  for (const b of map.buildings) {
+    hash += `|${b.x.toFixed(1)},${b.y.toFixed(1)},${b.width.toFixed(1)},${b.height.toFixed(1)},${b.angleDeg}`;
+  }
+  return hash;
+}
+
 function getClientNav(map) {
-  const key = map.id || `${map.width}x${map.height}:${map.buildings.length}`;
+  const key = mapFingerprint(map);
   if (navCache.mapKey !== key) {
+    console.log("[nav] rebuilding grid", { buildings: map.buildings.length, mapId: map.id });
     navCache.mapKey = key;
     navCache.nav = buildNavGridClient(map, state.snapshot.config.playerRadius);
     pathCache.key = "";
@@ -692,7 +701,9 @@ function api(path, options = {}) {
   }).then(async (response) => {
     const json = await response.json().catch(() => ({}));
     if (!response.ok) {
-      throw new Error(json.error || "Request failed");
+      const err = new Error(json.error || "Request failed");
+      err.status = response.status;
+      throw err;
     }
     return json;
   });
@@ -727,18 +738,28 @@ async function startPolling() {
   if (state.longPollActive) return;
   state.longPollActive = true;
   let lastVersion = -1;
+  let retryDelay = 500;
   while (state.token) {
     try {
       const suffix = lastVersion >= 0 ? `&version=${lastVersion}` : "";
       const snapshot = await api(`/api/state?token=${encodeURIComponent(state.token)}${suffix}`);
       lastVersion = typeof snapshot.version === "number" ? snapshot.version : lastVersion;
+      retryDelay = 500;
       handleSnapshot(snapshot);
     } catch (error) {
-      ui.menu.classList.remove("hidden");
-      ui.hud.classList.add("hidden");
-      ui.menuMessage.textContent = error.message;
-      state.longPollActive = false;
-      return;
+      if (error.status === 401) {
+        localStorage.removeItem("move-and-shoot-token");
+        state.token = "";
+        ui.menu.classList.remove("hidden");
+        ui.hud.classList.add("hidden");
+        ui.menuMessage.textContent = "Session expired. Rejoin to continue.";
+        state.longPollActive = false;
+        return;
+      }
+      console.warn("[poll] transient error, retrying:", error.message);
+      pushMessage(`Reconnecting… (${error.message})`);
+      await new Promise((r) => setTimeout(r, retryDelay));
+      retryDelay = Math.min(retryDelay * 2, 5000);
     }
   }
   state.longPollActive = false;
@@ -753,8 +774,9 @@ function handleSnapshot(snapshot) {
   state.snapshot = snapshot;
   state.roomCode = snapshot.room.code;
   if (snapshot.match?.map && snapshot.config) {
-    const key = snapshot.match.map.id || `${snapshot.match.map.width}x${snapshot.match.map.height}:${snapshot.match.map.buildings.length}`;
+    const key = mapFingerprint(snapshot.match.map);
     if (navCache.mapKey !== key) {
+      console.log("[nav] rebuilding grid (handleSnapshot)", { buildings: snapshot.match.map.buildings.length, mapId: snapshot.match.map.id });
       navCache.mapKey = key;
       navCache.nav = buildNavGridClient(snapshot.match.map, snapshot.config.playerRadius);
       pathCache.key = "";
