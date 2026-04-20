@@ -1290,16 +1290,19 @@ function commitCurrentDraft(mode) {
 
 function beginPlanDrag(point, pointerType) {
   if (!state.snapshot?.you.alive || state.snapshot.room.phase !== "planning") {
+    console.log("[beginPlanDrag] bail: alive or phase", { alive: state.snapshot?.you?.alive, phase: state.snapshot?.room?.phase });
     return false;
   }
   const mode = state.inputStep;
   const updated = updatePlanDraftFromScreenPoint(point, mode);
   if (!updated) {
+    console.log("[beginPlanDrag] bail: updatePlanDraftFromScreenPoint returned false", { point, mode });
     return false;
   }
   state.dragPlan.active = true;
   state.dragPlan.mode = mode;
   state.dragPlan.pointerType = pointerType;
+  console.log("[beginPlanDrag] ok", { mode, point });
   return true;
 }
 
@@ -1381,11 +1384,14 @@ function clampMoveTarget(worldPoint) {
 }
 
 canvas.addEventListener("pointerdown", async (event) => {
+  console.log("[pointerdown]", { type: event.pointerType, button: event.button, phase: state.snapshot?.room?.phase, alive: state.snapshot?.you?.alive, target: event.target?.tagName });
   sounds.unlock();
   if (!state.snapshot?.match?.active) {
+    console.log("[pointerdown] bail: match not active");
     return;
   }
   if (event.pointerType === "touch") {
+    console.log("[pointerdown] bail: pointerType=touch (handled by touchstart)");
     return;
   }
   if (!state.snapshot.you.alive) {
