@@ -1240,6 +1240,74 @@ function beginLobbyCountdown(room) {
   setPhase(room, "lobby_countdown", CONFIG.lobbyCountdownMs, "Match starts soon");
 }
 
+function pickRandomWalkableTarget(origin, map) {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const angle = Math.random() * Math.PI * 2;
+    const dist = (0.4 + Math.random() * 0.6) * CONFIG.moveRange;
+    const candidate = {
+      x: clamp(origin.x + Math.cos(angle) * dist, CONFIG.playerRadius, map.width - CONFIG.playerRadius),
+      y: clamp(origin.y + Math.sin(angle) * dist, CONFIG.playerRadius, map.height - CONFIG.playerRadius)
+    };
+    if (!pointBlockedByBuilding(candidate, CONFIG.playerRadius, map)) {
+      return candidate;
+    }
+  }
+  return { x: origin.x, y: origin.y };
+}
+
+function pickClearAimDirection(origin, map) {
+  let bestDir = { x: 0, y: -1 };
+  let bestDist = 0;
+  const baseAngle = Math.random() * Math.PI * 2;
+  for (let i = 0; i < 8; i += 1) {
+    const angle = baseAngle + (i / 8) * Math.PI * 2 + (Math.random() - 0.5) * 0.3;
+    const dir = { x: Math.cos(angle), y: Math.sin(angle) };
+    const wallHit = raycastToMap(origin, dir, map);
+    if (wallHit.distance > bestDist) {
+      bestDist = wallHit.distance;
+      bestDir = dir;
+    }
+  }
+  return bestDir;
+}
+
+function generateBotPlan(room, bot) {
+  const map = room.round.map;
+  const enemies = room.match.participantIds
+    .map((id) => room.players.get(id))
+    .filter((p) => p && p.id !== bot.id && p.roundAlive && !p.disconnected);
+  const visible = enemies.filter((e) => lineOfSightClear(bot, e, map));
+
+  let aimDir;
+  if (visible.length > 0) {
+    const target = visible.reduce(
+      (best, e) => (distance(bot, e) < distance(bot, best) ? e : best),
+      visible[0]
+    );
+    const lead = 0.5 + Math.random() * 0.5;
+    const last = target.lastAimDir || { x: 0, y: 0 };
+    const predictedX = target.x + last.x * CONFIG.moveRange * 0.4 * lead;
+    const predictedY = target.y + last.y * CONFIG.moveRange * 0.4 * lead;
+    let dx = predictedX - bot.x;
+    let dy = predictedY - bot.y;
+    const len = Math.hypot(dx, dy);
+    if (len > 0) { dx /= len; dy /= len; }
+    const wobble = (Math.random() - 0.5) * 0.25;
+    const cos = Math.cos(wobble);
+    const sin = Math.sin(wobble);
+    aimDir = { x: dx * cos - dy * sin, y: dx * sin + dy * cos };
+    const wallHit = raycastToMap(bot, aimDir, map);
+    if (wallHit.distance < CONFIG.playerRadius * 4) {
+      aimDir = pickClearAimDirection(bot, map);
+    }
+  } else {
+    aimDir = pickClearAimDirection(bot, map);
+  }
+
+  const moveTarget = pickRandomWalkableTarget(bot, map);
+  return { moveTarget, aimDir };
+}
+
 function pickBrSpawn(map) {
   for (let attempt = 0; attempt < 400; attempt += 1) {
     const candidate = {
@@ -1429,6 +1497,17 @@ function startPlanning(room) {
     }
     player.plan = createFreshPlan(player);
     player.planFinal = false;
+    if (player.bot && player.roundAlive && !player.disconnected && room.round.map) {
+      const botPlan = generateBotPlan(room, player);
+      player.plan = {
+        moveTarget: botPlan.moveTarget,
+        aimDir: botPlan.aimDir,
+        ready: true,
+        updatedAt: nowMs()
+      };
+      player.lastAimDir = botPlan.aimDir;
+      player.planFinal = true;
+    }
     room.round.currentTurn.plans[player.id] = player.plan;
     room.round.planningVisibility[player.id] = visibleEnemiesForPlayer(room, player.id);
   }
@@ -1762,6 +1841,7 @@ function updateRoom(room) {
   ensureHost(room);
 
   for (const player of room.players.values()) {
+    if (player.bot) continue;
     if (player.connected && now - player.lastSeenAt > CONFIG.pollGraceMs) {
       player.connected = false;
       player.disconnected = true;
@@ -1770,6 +1850,7 @@ function updateRoom(room) {
 
   if (!room.match) {
     for (const [playerId, player] of room.players.entries()) {
+      if (player.bot) continue;
       if (!player.connected && now - player.lastSeenAt > CONFIG.lobbyCleanupMs) {
         sessions.delete(player.token);
         room.players.delete(playerId);
@@ -2042,7 +2123,7 @@ function serveFile(requestPath, response) {
 
 function findAvailableBrRoom() {
   for (const room of rooms.values()) {
-    if (room.mode === "br" && room.players.size < CONFIG.brMaxPlayers) {
+    if (room.mode === "br" && !room.private && room.players.size < CONFIG.brMaxPlayers) {
       return room;
     }
   }
@@ -2054,13 +2135,14 @@ async function handleJoin(request, response) {
   const requestedMode = body.mode === "br" ? "br" : "turn";
   const requestedName = sanitizePlayerName(body.name);
   const requestedMapGridSize = sanitizeMapGridSize(body.mapGridSize);
+  const isPractice = !!body.practice;
 
   let room = null;
   let desiredCode = "";
-  if (requestedMode === "br") {
+  if (requestedMode === "br" && !isPractice) {
     room = findAvailableBrRoom();
     desiredCode = room ? room.code : "";
-  } else {
+  } else if (requestedMode === "turn") {
     desiredCode = sanitizeRoomCode(body.roomCode);
     if (body.roomCode && desiredCode.length !== CONFIG.roomCodeLength) {
       json(response, 400, { ok: false, error: "Room codes must be 4 characters." });
@@ -2084,14 +2166,17 @@ async function handleJoin(request, response) {
     room = createRoom(code, requestedMode);
     const rawRounds = Number(body.totalRounds);
     const totalRounds = [1, 3, 5, 7].includes(rawRounds) ? rawRounds : CONFIG.totalRounds;
+    const rawKillTarget = Number(body.killTarget);
+    const killTargetOverride = [3, 5, 7, 10, 15, 20].includes(rawKillTarget) ? rawKillTarget : null;
     room.settings = {
       mapGridSize:
         requestedMode === "br"
           ? CONFIG.brMapGridSize
           : requestedMapGridSize || CONFIG.defaultMapGridSize,
-      killTarget: requestedMode === "br" ? CONFIG.brKillTarget : 0,
+      killTarget: requestedMode === "br" ? (killTargetOverride || CONFIG.brKillTarget) : 0,
       totalRounds: requestedMode === "br" ? null : totalRounds
     };
+    if (isPractice) room.private = true;
     rooms.set(code, room);
   }
 
@@ -2136,6 +2221,14 @@ async function handleJoin(request, response) {
   if (room.mode === "br") {
     addBrParticipant(room, player);
   }
+
+  const botCount = Number(body.bots) || 0;
+  if (botCount > 0 && (isPractice || room.players.size === 1)) {
+    for (let i = 0; i < Math.min(botCount, 12); i += 1) {
+      addBotToRoom(room);
+    }
+  }
+
   notifyRoomChange(room);
   json(response, 200, {
     ok: true,
@@ -2249,6 +2342,68 @@ async function handleLeave(request, response) {
   json(response, 200, { ok: true });
 }
 
+function addBotToRoom(room) {
+  const cap = room.mode === "br" ? CONFIG.brMaxPlayers : CONFIG.maxPlayers;
+  if (room.players.size >= cap) return null;
+  const serial = globalPlayerSerial++;
+  const bot = {
+    id: `bot-${serial}`,
+    token: `bot-token-${serial}`,
+    roomCode: room.code,
+    name: `Bot ${serial}`,
+    color: generateColor(serial),
+    connected: true,
+    disconnected: false,
+    bot: true,
+    lastSeenAt: nowMs(),
+    x: CONFIG.screenSize / 2,
+    y: CONFIG.screenSize / 2,
+    spawnX: 0,
+    spawnY: 0,
+    roundAlive: false,
+    spectating: false,
+    roundDeathAtMs: null,
+    lastAimDir: { x: 0, y: -1 },
+    plan: {
+      moveTarget: null,
+      aimDir: { x: 0, y: -1 },
+      ready: false,
+      updatedAt: nowMs()
+    }
+  };
+  room.players.set(bot.id, bot);
+  if (room.mode === "br") {
+    addBrParticipant(room, bot);
+  }
+  return bot;
+}
+
+async function handleAddBot(request, response) {
+  const body = await readJsonBody(request);
+  const player = getPlayerByToken(body.token);
+  if (!player) {
+    json(response, 401, { ok: false, error: "Invalid session." });
+    return;
+  }
+  const room = rooms.get(player.roomCode);
+  if (!room) {
+    json(response, 404, { ok: false, error: "Room not found." });
+    return;
+  }
+  ensureHost(room);
+  if (player.id !== room.hostId) {
+    json(response, 403, { ok: false, error: "Only the host can add bots." });
+    return;
+  }
+  const bot = addBotToRoom(room);
+  if (!bot) {
+    json(response, 409, { ok: false, error: "Room is full." });
+    return;
+  }
+  notifyRoomChange(room);
+  json(response, 200, { ok: true, botId: bot.id });
+}
+
 async function handleStart(request, response) {
   const body = await readJsonBody(request);
   const player = getPlayerByToken(body.token);
@@ -2339,6 +2494,11 @@ const server = http.createServer(async (request, response) => {
 
     if (request.method === "POST" && urlObject.pathname === "/api/respawn") {
       await handleRespawn(request, response);
+      return;
+    }
+
+    if (request.method === "POST" && urlObject.pathname === "/api/add-bot") {
+      await handleAddBot(request, response);
       return;
     }
 

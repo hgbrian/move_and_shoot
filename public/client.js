@@ -21,8 +21,10 @@ const UI_ELEMENTS = {
   playersLabel: "players-label",
   startGameButton: "start-game-button",
   startTestButton: "start-test-button",
+  addBotButton: "add-bot-button",
   topActionSlot: "top-action-slot",
   createBrButton: "create-br-button",
+  practiceButton: "practice-button",
   scoreTile: "score-tile",
   leaderboard: "leaderboard",
   leaderboardList: "leaderboard-list",
@@ -710,6 +712,12 @@ async function joinRoom(roomCode, options = {}) {
   payload.totalRounds = Number(ui.totalRoundsInput.value) || 3;
   if (options.mode === "br") {
     payload.mode = "br";
+  }
+  if (options.practice) {
+    payload.mode = "br";
+    payload.practice = true;
+    payload.bots = options.bots || 3;
+    payload.killTarget = options.killTarget || 5;
   }
   const result = await api("/api/join", { method: "POST", body: payload });
   state.token = result.token;
@@ -1667,6 +1675,16 @@ bind(ui.createBrButton, "click", async () => {
   }
 });
 
+bind(ui.practiceButton, "click", async () => {
+  sounds.unlock();
+  ui.menuMessage.textContent = "Starting practice...";
+  try {
+    await joinRoom("", { practice: true, bots: 3, killTarget: 5 });
+  } catch (error) {
+    ui.menuMessage.textContent = error.message;
+  }
+});
+
 
 bind(ui.startGameButton, "click", async () => {
   sounds.unlock();
@@ -1683,6 +1701,16 @@ bind(ui.startTestButton, "click", async () => {
   try {
     await startGame({ testMode: true });
     pushMessage("Test mode (1P) starting...");
+  } catch (error) {
+    pushMessage(error.message);
+  }
+});
+
+bind(ui.addBotButton, "click", async () => {
+  sounds.unlock();
+  try {
+    await api("/api/add-bot", { method: "POST", body: { token: state.token } });
+    pushMessage("Bot added.");
   } catch (error) {
     pushMessage(error.message);
   }
