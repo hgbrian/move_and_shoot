@@ -536,6 +536,34 @@ function formatSeconds(ms) {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
+function lineOfSightClearClient(a, b, buildings) {
+  if (!buildings) return true;
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const length = Math.hypot(dx, dy);
+  if (length < 1) return true;
+  const stepCount = Math.max(2, Math.ceil(length / 12));
+  for (let i = 1; i < stepCount; i += 1) {
+    const t = i / stepCount;
+    const px = a.x + dx * t;
+    const py = a.y + dy * t;
+    for (const building of buildings) {
+      const ddx = px - building.x;
+      const ddy = py - building.y;
+      const reach = building.boundingRadius || (Math.hypot(building.halfWidth, building.halfHeight) + 6);
+      if (ddx * ddx + ddy * ddy > reach * reach) continue;
+      const cos = Math.cos(-building.angleRad);
+      const sin = Math.sin(-building.angleRad);
+      const lx = ddx * cos - ddy * sin;
+      const ly = ddx * sin + ddy * cos;
+      if (Math.abs(lx) < building.halfWidth && Math.abs(ly) < building.halfHeight) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
 function visiblePlayers() {
   if (!state.snapshot) {
     return [];
@@ -1065,26 +1093,20 @@ function drawBullets() {
   });
 }
 
-function getDrawAimDir(player, position) {
+function getDrawAimDir(player) {
   const baseAim = player.lastAimDir || { x: 0, y: -1 };
   if (!state.snapshot || state.snapshot.room.phase !== "movement") return baseAim;
   const movement = state.snapshot.match?.movement;
   if (!movement) return baseAim;
   const entry = movement.byPlayer?.[player.id];
   if (!entry || !entry.samples || entry.samples.length < 2) return baseAim;
-  const elapsed = currentPlaybackServerNow() - movement.startedAt;
-  const aheadMs = 80;
-  const a = position;
   const samples = entry.samples;
-  let b = null;
-  for (let i = 0; i < samples.length; i += 1) {
-    if (samples[i].timeMs >= elapsed + aheadMs) { b = samples[i]; break; }
-  }
-  if (!b) b = samples[samples.length - 1];
-  const dx = b.x - a.x;
-  const dy = b.y - a.y;
+  const start = samples[0];
+  const end = samples[samples.length - 1];
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
   const len = Math.hypot(dx, dy);
-  if (len < 1) return baseAim;
+  if (len < 4) return baseAim;
   const moveDir = { x: dx / len, y: dy / len };
   const moveAngle = Math.atan2(moveDir.y, moveDir.x);
   const aimAngle = Math.atan2(baseAim.y, baseAim.x);
@@ -1092,6 +1114,7 @@ function getDrawAimDir(player, position) {
   while (delta > Math.PI) delta -= 2 * Math.PI;
   while (delta < -Math.PI) delta += 2 * Math.PI;
   const movementMs = state.snapshot.config.movementMs || 2000;
+  const elapsed = currentPlaybackServerNow() - movement.startedAt;
   const t = clamp(elapsed / movementMs, 0, 1);
   const eased = t * t * (3 - 2 * t);
   const blended = moveAngle + delta * eased;
@@ -1100,12 +1123,18 @@ function getDrawAimDir(player, position) {
 
 function drawPlayer(player) {
   const position = getAnimatedPlayerPosition(player);
+  if (player.id !== state.snapshot.you.id && state.snapshot.you.alive) {
+    const me = byId(state.snapshot.you.id) || state.snapshot.you;
+    const myPos = getAnimatedPlayerPosition(me);
+    const buildings = navCache.nav?.buildings;
+    if (!lineOfSightClearClient(myPos, position, buildings)) return;
+  }
   const screen = worldToScreen(position);
   const radius = state.snapshot.config.playerRadius * state.camera.zoom;
   const alive = player.alive;
-  const brimRadius = radius * 1.5;
-  const crownRadius = radius * 0.7;
-  const aimDir = getDrawAimDir(player, position);
+  const brimRadius = radius;
+  const crownRadius = radius * 0.55;
+  const aimDir = getDrawAimDir(player);
   const aimPerp = { x: -aimDir.y, y: aimDir.x };
 
   ctx.save();

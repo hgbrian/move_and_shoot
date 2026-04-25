@@ -1279,32 +1279,67 @@ function generateBotPlan(room, bot) {
   const visible = enemies.filter((e) => lineOfSightClear(bot, e, map));
 
   let aimDir;
+  let moveTarget;
+
   if (visible.length > 0) {
     const target = visible.reduce(
       (best, e) => (distance(bot, e) < distance(bot, best) ? e : best),
       visible[0]
     );
-    const lead = 0.5 + Math.random() * 0.5;
-    const last = target.lastAimDir || { x: 0, y: 0 };
-    const predictedX = target.x + last.x * CONFIG.moveRange * 0.4 * lead;
-    const predictedY = target.y + last.y * CONFIG.moveRange * 0.4 * lead;
-    let dx = predictedX - bot.x;
-    let dy = predictedY - bot.y;
+    let dx = target.x - bot.x;
+    let dy = target.y - bot.y;
     const len = Math.hypot(dx, dy);
     if (len > 0) { dx /= len; dy /= len; }
-    const wobble = (Math.random() - 0.5) * 0.25;
+    const wobble = (Math.random() - 0.5) * 0.06;
     const cos = Math.cos(wobble);
     const sin = Math.sin(wobble);
     aimDir = { x: dx * cos - dy * sin, y: dx * sin + dy * cos };
+
+    const idealRange = CONFIG.moveRange * 0.45;
+    const gap = len - idealRange;
+    const advanceMag = Math.sign(gap) * Math.min(Math.abs(gap), CONFIG.moveRange * 0.6);
+    const sign = Math.random() < 0.5 ? 1 : -1;
+    const strafeDist = (0.2 + Math.random() * 0.35) * CONFIG.moveRange;
+    moveTarget = {
+      x: clamp(bot.x + dx * advanceMag + (-dy * sign) * strafeDist, CONFIG.playerRadius, map.width - CONFIG.playerRadius),
+      y: clamp(bot.y + dy * advanceMag + (dx * sign) * strafeDist, CONFIG.playerRadius, map.height - CONFIG.playerRadius)
+    };
+    if (pointBlockedByBuilding(moveTarget, CONFIG.playerRadius, map)) {
+      moveTarget = {
+        x: clamp(bot.x + dx * advanceMag, CONFIG.playerRadius, map.width - CONFIG.playerRadius),
+        y: clamp(bot.y + dy * advanceMag, CONFIG.playerRadius, map.height - CONFIG.playerRadius)
+      };
+    }
+    if (pointBlockedByBuilding(moveTarget, CONFIG.playerRadius, map)) {
+      moveTarget = pickRandomWalkableTarget(bot, map);
+    }
+  } else if (enemies.length > 0) {
+    const closest = enemies.reduce(
+      (best, e) => (distance(bot, e) < distance(bot, best) ? e : best),
+      enemies[0]
+    );
+    let dx = closest.x - bot.x;
+    let dy = closest.y - bot.y;
+    const len = Math.hypot(dx, dy);
+    if (len > 0) { dx /= len; dy /= len; }
+    const advance = Math.min(len, CONFIG.moveRange) * (0.7 + Math.random() * 0.3);
+    moveTarget = {
+      x: clamp(bot.x + dx * advance, CONFIG.playerRadius, map.width - CONFIG.playerRadius),
+      y: clamp(bot.y + dy * advance, CONFIG.playerRadius, map.height - CONFIG.playerRadius)
+    };
+    if (pointBlockedByBuilding(moveTarget, CONFIG.playerRadius, map)) {
+      moveTarget = pickRandomWalkableTarget(bot, map);
+    }
+    aimDir = { x: dx, y: dy };
     const wallHit = raycastToMap(bot, aimDir, map);
     if (wallHit.distance < CONFIG.playerRadius * 4) {
       aimDir = pickClearAimDirection(bot, map);
     }
   } else {
+    moveTarget = pickRandomWalkableTarget(bot, map);
     aimDir = pickClearAimDirection(bot, map);
   }
 
-  const moveTarget = pickRandomWalkableTarget(bot, map);
   return { moveTarget, aimDir };
 }
 
