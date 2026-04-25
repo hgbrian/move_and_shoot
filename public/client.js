@@ -1490,6 +1490,24 @@ const KILL_FLAVOR = [
   (name) => `${name} hit the floor`
 ];
 
+function formatVictimList(victims) {
+  return victims.length === 2
+    ? `${victims[0]} and ${victims[1]}`
+    : `${victims.slice(0, -1).join(", ")}, and ${victims[victims.length - 1]}`;
+}
+
+function killHeadline(count) {
+  if (count === 2) return "DOUBLE KILL";
+  if (count === 3) return "TRIPLE KILL";
+  if (count === 4) return "QUADRA KILL";
+  if (count === 5) return "PENTA KILL";
+  return `${count} KILLS`;
+}
+
+function queueKillNotice(notice) {
+  state.killNoticeQueue.push(notice);
+}
+
 function checkKillNotices() {
   if (!state.snapshot) return;
   if (state.snapshot.room.phase !== "shooting") return;
@@ -1517,23 +1535,39 @@ function checkKillNotices() {
     if (victims.length === 1) {
       const text = KILL_FLAVOR[Math.floor(Math.random() * KILL_FLAVOR.length)](victims[0]);
       pushMessage(`${text}.`);
-      state.killNoticeQueue.push(text);
+      queueKillNotice({ text, variant: "standard", lifeMs: 2200 });
       continue;
     }
 
-    const victimsText =
-      victims.length === 2
-        ? `${victims[0]} and ${victims[1]}`
-        : `${victims.slice(0, -1).join(", ")}, and ${victims[victims.length - 1]}`;
+    const victimsText = formatVictimList(victims);
     pushMessage(`That shot got ${victims.length} kills: ${victimsText}.`);
-    state.killNoticeQueue.push(`${victims.length} KILLS`);
+    const headline = killHeadline(victims.length);
+    if (victims.length >= 3) {
+      queueKillNotice({
+        text: headline,
+        subtitle: `${victims.length} kills in one shot`,
+        variant: "mega",
+        lifeMs: 3200
+      });
+    } else {
+      queueKillNotice({
+        text: headline,
+        subtitle: "2 kills in one shot",
+        variant: "standard",
+        lifeMs: 2400
+      });
+    }
   }
 }
 
 function drawKillNotice() {
   if (!state.killNotice && state.killNoticeQueue.length) {
+    const next = state.killNoticeQueue.shift();
     state.killNotice = {
-      text: state.killNoticeQueue.shift(),
+      text: next.text || String(next),
+      subtitle: next.subtitle || "",
+      variant: next.variant || "standard",
+      lifeMs: next.lifeMs || 2200,
       startMs: performance.now()
     };
   }
@@ -1541,7 +1575,7 @@ function drawKillNotice() {
   const notice = state.killNotice;
   if (!notice) return;
   const age = performance.now() - notice.startMs;
-  const lifeMs = 2200;
+  const lifeMs = notice.lifeMs || 2200;
   if (age > lifeMs) {
     state.killNotice = null;
     return;
@@ -1550,8 +1584,47 @@ function drawKillNotice() {
   const fadeIn = Math.min(1, age / 140);
   const fadeOut = t > 0.72 ? (1 - t) / 0.28 : 1;
   const alpha = fadeIn * fadeOut;
-  const yOffset = 18 + (1 - fadeIn) * 18;
   const cx = window.innerWidth / 2;
+
+  if (notice.variant === "mega") {
+    const cy = window.innerHeight * 0.28;
+    const pulse = 1 + Math.sin(t * Math.PI * 6) * 0.08 * (1 - t);
+    const ringAlpha = alpha * (1 - t * 0.4);
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.scale(pulse, pulse);
+    ctx.textAlign = "center";
+
+    for (let i = 0; i < 18; i += 1) {
+      const angle = (i / 18) * Math.PI * 2;
+      const inner = 74 + t * 12;
+      const outer = 128 + t * 26;
+      ctx.strokeStyle = `rgba(255, 214, 102, ${ringAlpha * 0.6})`;
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.moveTo(Math.cos(angle) * inner, Math.sin(angle) * inner);
+      ctx.lineTo(Math.cos(angle) * outer, Math.sin(angle) * outer);
+      ctx.stroke();
+    }
+
+    ctx.lineWidth = 10;
+    ctx.strokeStyle = `rgba(20, 12, 8, ${alpha * 0.82})`;
+    ctx.font = "900 64px Trebuchet MS";
+    ctx.strokeText(notice.text, 0, 0);
+    ctx.fillStyle = `rgba(220, 60, 40, ${alpha})`;
+    ctx.fillText(notice.text, 0, 0);
+
+    ctx.font = "900 22px Trebuchet MS";
+    ctx.lineWidth = 5;
+    ctx.strokeStyle = `rgba(20, 12, 8, ${alpha * 0.68})`;
+    ctx.strokeText(notice.subtitle, 0, 36);
+    ctx.fillStyle = `rgba(255, 221, 130, ${alpha})`;
+    ctx.fillText(notice.subtitle, 0, 36);
+    ctx.restore();
+    return;
+  }
+
+  const yOffset = 18 + (1 - fadeIn) * 18;
   const cy = window.innerHeight * 0.32 + yOffset;
   ctx.save();
   ctx.textAlign = "center";
@@ -1561,6 +1634,13 @@ function drawKillNotice() {
   ctx.strokeText(notice.text, cx, cy);
   ctx.fillStyle = `rgba(45, 106, 79, ${alpha})`;
   ctx.fillText(notice.text, cx, cy);
+  if (notice.subtitle) {
+    ctx.font = "800 16px Trebuchet MS";
+    ctx.lineWidth = 4;
+    ctx.strokeText(notice.subtitle, cx, cy + 22);
+    ctx.fillStyle = `rgba(240, 232, 210, ${alpha})`;
+    ctx.fillText(notice.subtitle, cx, cy + 22);
+  }
   ctx.restore();
 }
 
