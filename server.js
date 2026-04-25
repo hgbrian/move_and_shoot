@@ -1128,7 +1128,7 @@ function sanitizeMapGridSize(rawValue) {
 function generateMap(mapGridSize) {
   const gridSize = sanitizeMapGridSize(mapGridSize);
   const buildingTarget = Math.min(
-    100,
+    400,
     Math.round(CONFIG.defaultBuildingCount * ((gridSize * gridSize) / 4))
   );
   const map = {
@@ -1353,7 +1353,16 @@ function startBrMatch(room) {
 
 function startBrRound(room) {
   room.match.currentRoundNumber += 1;
-  const map = generateMap(CONFIG.brMapGridSize);
+  const fixedSize = room.settings.fixedMapGridSize || null;
+  let gridSize;
+  if (fixedSize) {
+    gridSize = fixedSize;
+  } else {
+    const count = room.match.participantIds.length;
+    gridSize = clamp(Math.ceil(Math.sqrt(Math.max(count, 1))), 2, 10);
+  }
+  room.settings.mapGridSize = gridSize;
+  const map = generateMap(gridSize);
   getNavGrid(map);
   const participantIds = room.match.participantIds;
   room.round = {
@@ -2168,11 +2177,13 @@ async function handleJoin(request, response) {
     const totalRounds = [1, 3, 5, 7].includes(rawRounds) ? rawRounds : CONFIG.totalRounds;
     const rawKillTarget = Number(body.killTarget);
     const killTargetOverride = [3, 5, 7, 10, 15, 20].includes(rawKillTarget) ? rawKillTarget : null;
+    const fixedMapGridSize = isPractice ? 3 : null;
     room.settings = {
       mapGridSize:
         requestedMode === "br"
-          ? CONFIG.brMapGridSize
+          ? (fixedMapGridSize || 2)
           : requestedMapGridSize || CONFIG.defaultMapGridSize,
+      fixedMapGridSize,
       killTarget: requestedMode === "br" ? (killTargetOverride || CONFIG.brKillTarget) : 0,
       totalRounds: requestedMode === "br" ? null : totalRounds
     };

@@ -888,8 +888,10 @@ function renderHud() {
     ? formatSeconds(getPhaseTimeRemaining())
     : "—";
   ui.roundLabel.textContent = state.snapshot.match.active
-    ? `${state.snapshot.match.currentRound} / ${state.snapshot.match.totalRounds}`
-    : "- / 3";
+    ? state.snapshot.match.totalRounds
+      ? `${state.snapshot.match.currentRound} / ${state.snapshot.match.totalRounds}`
+      : `${state.snapshot.match.currentRound}`
+    : "—";
   ui.turnLabel.textContent = state.snapshot.match.active
     ? String(state.snapshot.match.turnNumber || "-")
     : "-";
@@ -1063,81 +1065,130 @@ function drawBullets() {
   });
 }
 
+function getDrawAimDir(player, position) {
+  const baseAim = player.lastAimDir || { x: 0, y: -1 };
+  if (!state.snapshot || state.snapshot.room.phase !== "movement") return baseAim;
+  const movement = state.snapshot.match?.movement;
+  if (!movement) return baseAim;
+  const entry = movement.byPlayer?.[player.id];
+  if (!entry || !entry.samples || entry.samples.length < 2) return baseAim;
+  const elapsed = currentPlaybackServerNow() - movement.startedAt;
+  const aheadMs = 80;
+  const a = position;
+  const samples = entry.samples;
+  let b = null;
+  for (let i = 0; i < samples.length; i += 1) {
+    if (samples[i].timeMs >= elapsed + aheadMs) { b = samples[i]; break; }
+  }
+  if (!b) b = samples[samples.length - 1];
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const len = Math.hypot(dx, dy);
+  if (len < 1) return baseAim;
+  const moveDir = { x: dx / len, y: dy / len };
+  const moveAngle = Math.atan2(moveDir.y, moveDir.x);
+  const aimAngle = Math.atan2(baseAim.y, baseAim.x);
+  let delta = aimAngle - moveAngle;
+  while (delta > Math.PI) delta -= 2 * Math.PI;
+  while (delta < -Math.PI) delta += 2 * Math.PI;
+  const movementMs = state.snapshot.config.movementMs || 2000;
+  const t = clamp(elapsed / movementMs, 0, 1);
+  const eased = t * t * (3 - 2 * t);
+  const blended = moveAngle + delta * eased;
+  return { x: Math.cos(blended), y: Math.sin(blended) };
+}
+
 function drawPlayer(player) {
   const position = getAnimatedPlayerPosition(player);
   const screen = worldToScreen(position);
   const radius = state.snapshot.config.playerRadius * state.camera.zoom;
   const alive = player.alive;
-  const brimRadius = radius * 1.3;
-  const crownRadius = radius * 0.72;
-  const crownCenterX = 0;
-  const crownCenterY = 0;
+  const brimRadius = radius * 1.5;
+  const crownRadius = radius * 0.7;
+  const aimDir = getDrawAimDir(player, position);
+  const aimPerp = { x: -aimDir.y, y: aimDir.x };
+
   ctx.save();
   ctx.translate(screen.x, screen.y);
 
-  ctx.fillStyle = alive ? "rgba(52, 34, 19, 0.48)" : "rgba(60, 60, 60, 0.28)";
+  ctx.fillStyle = alive ? "rgba(45, 28, 14, 0.62)" : "rgba(60, 60, 60, 0.28)";
   ctx.beginPath();
   ctx.arc(0, 0, brimRadius, 0, Math.PI * 2);
   ctx.fill();
 
-  ctx.fillStyle = alive ? player.color : "rgba(110, 110, 110, 0.5)";
-  ctx.beginPath();
-  ctx.arc(crownCenterX, crownCenterY, crownRadius, 0, Math.PI * 2);
-  ctx.fill();
-
-  ctx.strokeStyle = "rgba(255, 248, 232, 0.32)";
+  ctx.strokeStyle = "rgba(33, 18, 9, 0.55)";
   ctx.lineWidth = 2;
   ctx.beginPath();
-  ctx.arc(crownCenterX, crownCenterY, crownRadius * 0.72, 0, Math.PI * 2);
-  ctx.stroke();
-
-  ctx.strokeStyle = "rgba(33, 18, 9, 0.58)";
-  ctx.lineWidth = 2.5;
-  ctx.beginPath();
   ctx.arc(0, 0, brimRadius, 0, Math.PI * 2);
   ctx.stroke();
 
-  const aimDir = player.lastAimDir || { x: 0, y: -1 };
+  ctx.strokeStyle = "rgba(33, 18, 9, 0.18)";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.arc(0, 0, brimRadius * 0.78, 0, Math.PI * 2);
+  ctx.stroke();
+
   const gunStart = {
-    x: crownCenterX + aimDir.x * (crownRadius * 0.35),
-    y: crownCenterY + aimDir.y * (crownRadius * 0.35)
+    x: aimDir.x * (crownRadius * 0.45),
+    y: aimDir.y * (crownRadius * 0.45)
   };
   const gunEnd = {
-    x: crownCenterX + aimDir.x * (brimRadius * 1.2),
-    y: crownCenterY + aimDir.y * (brimRadius * 1.2)
+    x: aimDir.x * (brimRadius * 1.18),
+    y: aimDir.y * (brimRadius * 1.18)
   };
-  const gunPerp = {
-    x: -aimDir.y,
-    y: aimDir.x
-  };
-
-  ctx.strokeStyle = alive ? "rgba(33, 18, 9, 0.88)" : "rgba(33,18,9,0.3)";
-  ctx.lineWidth = 4;
+  ctx.strokeStyle = alive ? "rgba(28, 16, 8, 0.95)" : "rgba(33,18,9,0.3)";
+  ctx.lineWidth = 4.5;
   ctx.lineCap = "round";
   ctx.beginPath();
   ctx.moveTo(gunStart.x, gunStart.y);
   ctx.lineTo(gunEnd.x, gunEnd.y);
   ctx.stroke();
-
   ctx.strokeStyle = alive ? "rgba(255, 244, 230, 0.45)" : "rgba(255,255,255,0.12)";
-  ctx.lineWidth = 1.5;
+  ctx.lineWidth = 1.25;
   ctx.beginPath();
   ctx.moveTo(gunStart.x, gunStart.y);
   ctx.lineTo(gunEnd.x, gunEnd.y);
   ctx.stroke();
-
-  ctx.strokeStyle = alive ? "rgba(33, 18, 9, 0.7)" : "rgba(33,18,9,0.22)";
+  ctx.strokeStyle = alive ? "rgba(28, 16, 8, 0.85)" : "rgba(33,18,9,0.22)";
   ctx.lineWidth = 3;
   ctx.beginPath();
   ctx.moveTo(
-    crownCenterX - aimDir.x * (crownRadius * 0.15) - gunPerp.x * (crownRadius * 0.28),
-    crownCenterY - aimDir.y * (crownRadius * 0.15) - gunPerp.y * (crownRadius * 0.28)
+    -aimDir.x * (crownRadius * 0.2) - aimPerp.x * (crownRadius * 0.34),
+    -aimDir.y * (crownRadius * 0.2) - aimPerp.y * (crownRadius * 0.34)
   );
   ctx.lineTo(
-    crownCenterX - aimDir.x * (crownRadius * 0.15) + gunPerp.x * (crownRadius * 0.28),
-    crownCenterY - aimDir.y * (crownRadius * 0.15) + gunPerp.y * (crownRadius * 0.28)
+    -aimDir.x * (crownRadius * 0.2) + aimPerp.x * (crownRadius * 0.34),
+    -aimDir.y * (crownRadius * 0.2) + aimPerp.y * (crownRadius * 0.34)
   );
   ctx.stroke();
+
+  ctx.fillStyle = "rgba(33, 18, 9, 0.6)";
+  ctx.beginPath();
+  ctx.arc(0, 0, crownRadius * 1.08, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = alive ? player.color : "rgba(110, 110, 110, 0.5)";
+  ctx.beginPath();
+  ctx.arc(0, 0, crownRadius, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.strokeStyle = "rgba(255, 248, 232, 0.28)";
+  ctx.lineWidth = 1.2;
+  ctx.beginPath();
+  ctx.arc(-crownRadius * 0.18, -crownRadius * 0.22, crownRadius * 0.55, Math.PI * 0.85, Math.PI * 1.5);
+  ctx.stroke();
+
+  ctx.strokeStyle = "rgba(33, 18, 9, 0.7)";
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.arc(0, 0, crownRadius, 0, Math.PI * 2);
+  ctx.stroke();
+
+  ctx.fillStyle = "rgba(33, 18, 9, 0.8)";
+  ctx.beginPath();
+  ctx.arc(0, 0, crownRadius * 0.16, 0, Math.PI * 2);
+  ctx.fill();
+
   ctx.restore();
 
   ctx.fillStyle = "#20170f";
