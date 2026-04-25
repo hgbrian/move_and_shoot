@@ -1754,7 +1754,7 @@ function simulateMovement(room, actionMap) {
     const end = b.fireTimeMs + b.stopTimeMs;
     if (end > lastEventMs) lastEventMs = end;
   }
-  const durationMs = Math.max(Math.round(lastEventMs + 600), 800);
+  const durationMs = Math.max(Math.round(lastEventMs + 900), 1000);
 
   return { byPlayer, bullets, kills, durationMs };
 }

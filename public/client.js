@@ -1778,7 +1778,7 @@ bind(ui.practiceButton, "click", async () => {
   sounds.unlock();
   ui.menuMessage.textContent = "Starting practice...";
   try {
-    await joinRoom("", { practice: true, bots: 3, killTarget: 5 });
+    await joinRoom("", { practice: true, bots: 7, killTarget: 5 });
   } catch (error) {
     ui.menuMessage.textContent = error.message;
   }
