@@ -24,22 +24,18 @@
           </select>
         </label>
         <label class="field">
-          <span>Rounds per match <em>(new room only)</em></span>
+          <span>First to <em>(new room only)</em></span>
           <select id="total-rounds-input">
-            <option value="1">First to 1</option>
-            <option value="3" selected>First to 3</option>
-            <option value="5">First to 5</option>
-            <option value="7">First to 7</option>
+            <option value="1">1</option>
+            <option value="3">3</option>
+            <option value="5" selected>5</option>
+            <option value="7">7</option>
+            <option value="10">10</option>
           </select>
         </label>
         <label class="field">
           <span>Bots to add <em>(new room only)</em></span>
-          <select id="bot-count-input">
-            <option value="0" selected>No bots</option>
-            <option value="2">2 bots</option>
-            <option value="4">4 bots</option>
-            <option value="6">6 bots</option>
-          </select>
+          <input id="bot-count-input" type="number" min="0" max="49" step="1" value="0" inputmode="numeric">
         </label>
         <label class="field checkbox-field">
           <span>
@@ -52,12 +48,11 @@
           <input id="room-code-input" maxlength="4" autocomplete="off" placeholder="Enter 4-letter room code">
         </label>
         <div class="actions">
-          <button id="practice-button" class="primary">Practice (15 bots, first to 5)</button>
           <button id="create-br-button">Join Battle Royale</button>
-          <button id="create-room-button">Create Room</button>
+          <button id="create-room-button" class="primary">Create Room</button>
           <button id="join-room-button">Join Room</button>
         </div>
-        <p id="menu-message" class="hint">Blank room code creates a new room. Adding bots creates a private respawn room your friends can join by code.</p>
+        <p id="menu-message" class="hint">Blank room code creates a new room. Add bots to make a private deathmatch room your friends can join by code.</p>
         <div class="rules">
           <p>Controls</p>
           <p>Press to set your move target, then drag to aim. Release to commit. Press again to refine.</p>

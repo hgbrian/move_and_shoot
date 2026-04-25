@@ -27,7 +27,6 @@ const UI_ELEMENTS = {
   addBotButton: "add-bot-button",
   topActionSlot: "top-action-slot",
   createBrButton: "create-br-button",
-  practiceButton: "practice-button",
   scoreTile: "score-tile",
   leaderboard: "leaderboard",
   leaderboardList: "leaderboard-list",
@@ -757,23 +756,20 @@ async function joinRoom(roomCode, options = {}) {
   if (!roomCode) {
     payload.lineOfSight = !!ui.lineOfSightInput.checked;
   }
-  const requestedBots = !roomCode && !options.practice ? (Number(ui.botCountInput.value) || 0) : 0;
+  const requestedBots = !roomCode
+    ? clamp(Math.floor(Number(ui.botCountInput.value) || 0), 0, 49)
+    : 0;
+  const firstTo = Number(ui.totalRoundsInput.value) || 5;
   if (requestedBots > 0) {
     payload.mode = "br";
     payload.private = true;
     payload.bots = requestedBots;
-    payload.killTarget = 5;
-  } else if (!roomCode && options.mode !== "br" && !options.practice) {
+    payload.killTarget = firstTo;
+  } else if (!roomCode && options.mode !== "br") {
     payload.bots = 0;
   }
   if (options.mode === "br") {
     payload.mode = "br";
-  }
-  if (options.practice) {
-    payload.mode = "br";
-    payload.practice = true;
-    payload.bots = options.bots || 3;
-    payload.killTarget = options.killTarget || 5;
   }
   const result = await api("/api/join", { method: "POST", body: payload });
   state.token = result.token;
@@ -2057,17 +2053,6 @@ bind(ui.createBrButton, "click", async () => {
   }
 });
 
-bind(ui.practiceButton, "click", async () => {
-  sounds.unlock();
-  ui.menuMessage.textContent = "Starting practice...";
-  try {
-    await joinRoom("", { practice: true, bots: 15, killTarget: 5 });
-  } catch (error) {
-    ui.menuMessage.textContent = error.message;
-  }
-});
-
-
 bind(ui.startGameButton, "click", async () => {
   sounds.unlock();
   try {
@@ -2100,6 +2085,11 @@ bind(ui.addBotButton, "click", async () => {
 
 bind(ui.roomCodeInput, "input", () => {
   ui.roomCodeInput.value = ui.roomCodeInput.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 4);
+});
+
+bind(ui.botCountInput, "input", () => {
+  const value = clamp(Math.floor(Number(ui.botCountInput.value) || 0), 0, 49);
+  ui.botCountInput.value = String(value);
 });
 
 window.addEventListener("resize", resizeCanvas);

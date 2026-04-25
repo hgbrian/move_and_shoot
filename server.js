@@ -15,7 +15,7 @@ const CONFIG = {
   preRoundCountdownMs: 1_000,
   planningMs: 4_000,
   planningMaxWaitMs: 3_000,
-  brMaxPlayers: 100,
+  brMaxPlayers: 50,
   brMapGridSize: 10,
   brKillTarget: 10,
   bulletRadius: 8,
@@ -2443,10 +2443,14 @@ async function handleJoin(request, response) {
     const code = desiredCode || generateRoomCode();
     room = createRoom(code, requestedMode);
     const rawRounds = Number(body.totalRounds);
-    const totalRounds = [1, 3, 5, 7].includes(rawRounds) ? rawRounds : CONFIG.totalRounds;
+    const totalRounds = [1, 3, 5, 7, 10].includes(rawRounds) ? rawRounds : CONFIG.totalRounds;
     const rawKillTarget = Number(body.killTarget);
-    const killTargetOverride = [3, 5, 7, 10, 15, 20].includes(rawKillTarget) ? rawKillTarget : null;
-    const fixedMapGridSize = isPractice ? 2 : null;
+    const killTargetOverride = [1, 3, 5, 7, 10, 15, 20].includes(rawKillTarget) ? rawKillTarget : null;
+    const fixedMapGridSize = requestedMode === "br" && !!body.private
+      ? requestedMapGridSize || CONFIG.defaultMapGridSize
+      : isPractice
+        ? 2
+        : null;
     room.settings = {
       mapGridSize:
         requestedMode === "br"
@@ -2505,7 +2509,8 @@ async function handleJoin(request, response) {
 
   const botCount = Number(body.bots) || 0;
   if (botCount > 0 && (isPractice || room.players.size === 1)) {
-    for (let i = 0; i < Math.min(botCount, 32); i += 1) {
+    const slotsRemaining = Math.max(0, CONFIG.brMaxPlayers - room.players.size);
+    for (let i = 0; i < Math.min(botCount, slotsRemaining); i += 1) {
       addBotToRoom(room);
     }
   }
