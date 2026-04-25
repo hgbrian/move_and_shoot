@@ -13,7 +13,7 @@ const CONFIG = {
   totalRounds: 3,
   lobbyCountdownMs: 1_000,
   preRoundCountdownMs: 1_000,
-  planningMs: 5_000,
+  planningMs: 4_000,
   planningMaxWaitMs: 3_000,
   brMaxPlayers: 100,
   brMapGridSize: 10,
@@ -1203,13 +1203,13 @@ function generateGuestName(room) {
   const taken = new Set(Array.from(room.players.values()).map((player) => player.name));
   let counter = 1;
   while (counter < 10_000) {
-    const name = `Guest ${counter}`;
+    const name = `Player ${counter}`;
     if (!taken.has(name)) {
       return name;
     }
     counter += 1;
   }
-  return `Guest ${randomId(4)}`;
+  return `Player ${randomId(4)}`;
 }
 
 function generateColor(serial) {
@@ -1787,15 +1787,9 @@ function simulateMovement(room, actionMap) {
     const rawSegments = [];
     let cappedDist = 0;
     for (const seg of allSegments) {
-      const remaining = maxFlightDist - cappedDist;
-      if (remaining <= 0) break;
-      if (seg.distance >= remaining) {
-        rawSegments.push({ origin: seg.origin, direction: seg.direction, distance: remaining, terminal: true });
-        cappedDist += remaining;
-        break;
-      }
       rawSegments.push(seg);
       cappedDist += seg.distance;
+      if (cappedDist >= maxFlightDist) break;
     }
     if (!rawSegments.length) continue;
 
