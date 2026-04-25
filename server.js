@@ -1436,15 +1436,40 @@ function generateBotPlan(room, bot) {
   return { moveTarget, aimDir };
 }
 
-function pickBrSpawn(map) {
-  for (let attempt = 0; attempt < 400; attempt += 1) {
+function pickBrSpawn(map, room, excludeId) {
+  const occupants = room
+    ? Array.from(room.players.values()).filter(
+        (p) => p.id !== excludeId && p.roundAlive && !p.disconnected
+      )
+    : [];
+  const minSpacing = CONFIG.playerRadius * 6;
+  for (let pass = 0; pass < 4; pass += 1) {
+    const spacing = Math.max(CONFIG.playerRadius * 2.4, minSpacing - pass * CONFIG.playerRadius);
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      const candidate = {
+        x: 120 + Math.random() * (map.width - 240),
+        y: 120 + Math.random() * (map.height - 240)
+      };
+      if (!insideWorld(candidate, CONFIG.playerRadius, map)) continue;
+      if (pointBlockedByBuilding(candidate, CONFIG.playerRadius + 20, map)) continue;
+      let tooClose = false;
+      for (const other of occupants) {
+        if (Math.hypot(other.x - candidate.x, other.y - candidate.y) < spacing) {
+          tooClose = true;
+          break;
+        }
+      }
+      if (!tooClose) return candidate;
+    }
+  }
+  for (let attempt = 0; attempt < 200; attempt += 1) {
     const candidate = {
       x: 120 + Math.random() * (map.width - 240),
       y: 120 + Math.random() * (map.height - 240)
     };
-    if (!insideWorld(candidate, CONFIG.playerRadius, map)) continue;
-    if (pointBlockedByBuilding(candidate, CONFIG.playerRadius + 20, map)) continue;
-    return candidate;
+    if (insideWorld(candidate, CONFIG.playerRadius, map) && !pointBlockedByBuilding(candidate, CONFIG.playerRadius + 20, map)) {
+      return candidate;
+    }
   }
   return { x: CONFIG.playerRadius + 40, y: CONFIG.playerRadius + 40 };
 }
@@ -1504,7 +1529,7 @@ function startBrRound(room) {
   for (const playerId of participantIds) {
     const player = room.players.get(playerId);
     if (!player) continue;
-    resetPlayerForRound(player, pickBrSpawn(map));
+    resetPlayerForRound(player, pickBrSpawn(map, room, player.id));
   }
   startPlanning(room);
 }
@@ -1630,7 +1655,7 @@ function startPlanning(room) {
       continue;
     }
     if (room.mode === "br" && !player.roundAlive && room.round.map && !player.disconnected) {
-      resetPlayerForRound(player, pickBrSpawn(room.round.map));
+      resetPlayerForRound(player, pickBrSpawn(room.round.map, room, player.id));
     }
     player.plan = createFreshPlan(player);
     player.planFinal = false;
@@ -2497,7 +2522,7 @@ async function handleRespawn(request, response) {
     json(response, 409, { ok: false, error: "Not currently in a round." });
     return;
   }
-  const spawn = pickBrSpawn(room.round.map);
+  const spawn = pickBrSpawn(room.round.map, room, player.id);
   resetPlayerForRound(player, spawn);
   if (room.match) {
     if (!room.match.participantIds.includes(player.id)) {
