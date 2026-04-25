@@ -906,6 +906,98 @@ function rayVsAxisAlignedRect(origin, direction, minX, maxX, minY, maxY) {
   return tMin >= 0 ? tMin : tMax >= 0 ? 0 : null;
 }
 
+function simulateBouncingBullet(origin, direction, map, maxBounces) {
+  const segments = [];
+  let curOrigin = { x: origin.x, y: origin.y };
+  let curDir = { x: direction.x, y: direction.y };
+  let prevSig = "";
+  for (let bounce = 0; bounce < maxBounces; bounce += 1) {
+    let nearestT = Infinity;
+    let hitNormal = null;
+    for (const building of map.buildings) {
+      const localOrigin = rotateIntoLocal(curOrigin, building);
+      const localDir = rotateVectorIntoLocal(curDir, building);
+      const t = rayVsAxisAlignedRect(
+        localOrigin,
+        localDir,
+        -building.halfWidth,
+        building.halfWidth,
+        -building.halfHeight,
+        building.halfHeight
+      );
+      if (t === null || t <= 0.01 || t >= nearestT) continue;
+      const hx = localOrigin.x + localDir.x * t;
+      const hy = localOrigin.y + localDir.y * t;
+      let nLocal;
+      const dxMin = Math.abs(hx + building.halfWidth);
+      const dxMax = Math.abs(hx - building.halfWidth);
+      const dyMin = Math.abs(hy + building.halfHeight);
+      const dyMax = Math.abs(hy - building.halfHeight);
+      const minSide = Math.min(dxMin, dxMax, dyMin, dyMax);
+      if (minSide === dxMin) nLocal = { x: -1, y: 0 };
+      else if (minSide === dxMax) nLocal = { x: 1, y: 0 };
+      else if (minSide === dyMin) nLocal = { x: 0, y: -1 };
+      else nLocal = { x: 0, y: 1 };
+      nearestT = t;
+      hitNormal = rotateLocalVectorToWorld(nLocal, building);
+    }
+
+    let worldT = Infinity;
+    let worldNormal = null;
+    if (curDir.x > 1e-6) {
+      const t = (map.width - curOrigin.x) / curDir.x;
+      if (t > 0.01 && t < worldT) { worldT = t; worldNormal = { x: -1, y: 0 }; }
+    } else if (curDir.x < -1e-6) {
+      const t = (0 - curOrigin.x) / curDir.x;
+      if (t > 0.01 && t < worldT) { worldT = t; worldNormal = { x: 1, y: 0 }; }
+    }
+    if (curDir.y > 1e-6) {
+      const t = (map.height - curOrigin.y) / curDir.y;
+      if (t > 0.01 && t < worldT) { worldT = t; worldNormal = { x: 0, y: -1 }; }
+    } else if (curDir.y < -1e-6) {
+      const t = (0 - curOrigin.y) / curDir.y;
+      if (t > 0.01 && t < worldT) { worldT = t; worldNormal = { x: 0, y: 1 }; }
+    }
+
+    if (!isFinite(nearestT) && !isFinite(worldT)) break;
+
+    if (worldT <= nearestT) {
+      segments.push({
+        origin: { x: curOrigin.x, y: curOrigin.y },
+        direction: { x: curDir.x, y: curDir.y },
+        distance: worldT,
+        terminal: true
+      });
+      break;
+    }
+
+    segments.push({
+      origin: { x: curOrigin.x, y: curOrigin.y },
+      direction: { x: curDir.x, y: curDir.y },
+      distance: nearestT,
+      terminal: false
+    });
+
+    const dotDN = curDir.x * hitNormal.x + curDir.y * hitNormal.y;
+    const reflected = {
+      x: curDir.x - 2 * dotDN * hitNormal.x,
+      y: curDir.y - 2 * dotDN * hitNormal.y
+    };
+    const hp = {
+      x: curOrigin.x + curDir.x * nearestT,
+      y: curOrigin.y + curDir.y * nearestT
+    };
+    const eps = 0.6;
+    curOrigin = { x: hp.x + reflected.x * eps, y: hp.y + reflected.y * eps };
+    curDir = reflected;
+
+    const sig = `${Math.round(curOrigin.x / 4)}|${Math.round(curOrigin.y / 4)}|${Math.round(curDir.x * 50)}|${Math.round(curDir.y * 50)}`;
+    if (sig === prevSig) break;
+    prevSig = sig;
+  }
+  return segments;
+}
+
 function raycastToMap(origin, direction, map) {
   const localHits = [];
   for (const building of map.buildings) {
@@ -1634,60 +1726,94 @@ function simulateMovement(room, actionMap) {
 
     const origin = posAt(shooter.id, fireTimeMs);
     const direction = normalizeVector(s.aimDir, { x: 0, y: -1 });
-    const wallHit = raycastToMap(origin, direction, map);
-    const wallDist = wallHit.distance;
-    const wallTimeMs = wallDist / bulletSpeedPxMs;
+    const rawSegments = simulateBouncingBullet(origin, direction, map, 30);
+    if (!rawSegments.length) continue;
 
+    const segments = [];
+    let cumDistBeforeSeg = 0;
     let hitVictim = null;
-    let hitTimeMs = wallTimeMs;
-    let hitDist = wallDist;
+    let hitTotalDist = null;
+    let hitTotalTimeMs = null;
+    let stoppedSegIdx = rawSegments.length - 1;
+    let stoppedSegDist = rawSegments[rawSegments.length - 1].distance;
 
-    for (const target of players) {
-      if (target.id === shooter.id) continue;
-      const t = sim[target.id];
-      if (!t.alive) continue;
-      if (t.deathAtMs !== null && t.deathAtMs <= fireTimeMs) continue;
+    for (let i = 0; i < rawSegments.length; i += 1) {
+      const seg = rawSegments[i];
+      const segStartTimeMs = cumDistBeforeSeg / bulletSpeedPxMs;
+      const segEndTimeMs = (cumDistBeforeSeg + seg.distance) / bulletSpeedPxMs;
 
-      const maxDt = Math.min(wallTimeMs, hitTimeMs);
-      const samples = 80;
-      let found = null;
-      for (let k = 1; k <= samples; k++) {
-        const dtMs = (k / samples) * maxDt;
-        const bulletPos = {
-          x: origin.x + direction.x * dtMs * bulletSpeedPxMs,
-          y: origin.y + direction.y * dtMs * bulletSpeedPxMs
-        };
-        const targetTimeMs = fireTimeMs + dtMs;
-        if (t.deathAtMs !== null && targetTimeMs >= t.deathAtMs) break;
-        const targetPos = posAt(target.id, targetTimeMs);
-        const d = Math.hypot(bulletPos.x - targetPos.x, bulletPos.y - targetPos.y);
-        if (d < radius + CONFIG.bulletRadius) { found = dtMs; break; }
+      let bestFoundDtMs = null;
+      let bestVictim = null;
+      for (const target of players) {
+        if (target.id === shooter.id) continue;
+        const t = sim[target.id];
+        if (!t.alive) continue;
+        if (t.deathAtMs !== null && t.deathAtMs <= fireTimeMs + segStartTimeMs) continue;
+        const samples = 40;
+        const segDuration = segEndTimeMs - segStartTimeMs;
+        for (let k = 1; k <= samples; k += 1) {
+          const dtIn = (k / samples) * segDuration;
+          const dtAbs = segStartTimeMs + dtIn;
+          const distIn = dtIn * bulletSpeedPxMs;
+          const bx = seg.origin.x + seg.direction.x * distIn;
+          const by = seg.origin.y + seg.direction.y * distIn;
+          const targetTimeMs = fireTimeMs + dtAbs;
+          if (t.deathAtMs !== null && targetTimeMs >= t.deathAtMs) break;
+          const tp = posAt(target.id, targetTimeMs);
+          const d = Math.hypot(bx - tp.x, by - tp.y);
+          if (d < radius + CONFIG.bulletRadius) {
+            if (bestFoundDtMs === null || dtAbs < bestFoundDtMs) {
+              bestFoundDtMs = dtAbs;
+              bestVictim = target.id;
+            }
+            break;
+          }
+        }
       }
-      if (found !== null && found < hitTimeMs) {
-        hitTimeMs = found;
-        hitDist = found * bulletSpeedPxMs;
-        hitVictim = target.id;
+
+      if (bestVictim) {
+        hitVictim = bestVictim;
+        hitTotalTimeMs = bestFoundDtMs;
+        hitTotalDist = bestFoundDtMs * bulletSpeedPxMs;
+        stoppedSegIdx = i;
+        stoppedSegDist = (bestFoundDtMs - segStartTimeMs) * bulletSpeedPxMs;
+        segments.push({
+          origin: seg.origin,
+          direction: seg.direction,
+          distance: stoppedSegDist,
+          startTimeMs: Math.round(segStartTimeMs)
+        });
+        break;
       }
+
+      segments.push({
+        origin: seg.origin,
+        direction: seg.direction,
+        distance: seg.distance,
+        startTimeMs: Math.round(segStartTimeMs)
+      });
+      cumDistBeforeSeg += seg.distance;
     }
+
+    const totalDist = hitTotalDist !== null
+      ? hitTotalDist
+      : segments.reduce((sum, s2) => sum + s2.distance, 0);
+    const stopTimeMs = totalDist / bulletSpeedPxMs;
 
     const bulletId = `bullet-${room.round.number}-${room.round.turnNumber}-${bulletSerial++}`;
     bullets.push({
       id: bulletId,
       shooterId: shooter.id,
       fireTimeMs,
-      origin: { x: origin.x, y: origin.y },
-      direction: { x: direction.x, y: direction.y },
-      wallDistance: wallDist,
-      wallPoint: wallHit.hitPoint,
-      wallTimeMs,
-      stopTimeMs: hitTimeMs,
-      stopDistance: hitDist,
+      segments,
+      stopTimeMs,
+      stopDistance: totalDist,
       victimId: hitVictim
     });
 
     if (hitVictim) {
       const v = sim[hitVictim];
-      v.deathAtMs = fireTimeMs + hitTimeMs;
+      v.deathAtMs = fireTimeMs + hitTotalTimeMs;
       v.hitByBulletId = bulletId;
     }
   }

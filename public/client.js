@@ -637,13 +637,9 @@ function getCameraTarget() {
       const elapsed = currentPlaybackServerNow() - movement.startedAt;
       const localElapsed = elapsed - localBullet.fireTimeMs;
       if (localElapsed >= 0) {
-        const cameraLeadMs = 40;
-        const clampedElapsed = clamp(localElapsed + cameraLeadMs, 0, localBullet.stopTimeMs + cameraLeadMs);
-        const travelDistance = (clampedElapsed / 1000) * state.snapshot.config.bulletSpeed;
-        return {
-          x: localBullet.origin.x + localBullet.direction.x * travelDistance,
-          y: localBullet.origin.y + localBullet.direction.y * travelDistance
-        };
+        const bulletSpeedPxMs = state.snapshot.config.bulletSpeed / 1000;
+        const head = bulletStateAtTime(localBullet, localElapsed + 40, bulletSpeedPxMs);
+        if (head) return { x: head.x, y: head.y };
       }
     }
   }
@@ -1069,48 +1065,71 @@ function drawMoveAndAimPreview() {
   }
 }
 
+function bulletStateAtTime(bullet, localElapsedMs, bulletSpeedPxMs) {
+  if (!bullet.segments || !bullet.segments.length) return null;
+  const stopMs = bullet.stopTimeMs;
+  const tMs = Math.min(Math.max(localElapsedMs, 0), stopMs);
+  for (const seg of bullet.segments) {
+    const segDurationMs = seg.distance / bulletSpeedPxMs;
+    const startMs = seg.startTimeMs;
+    if (tMs <= startMs + segDurationMs) {
+      const dtIn = Math.max(0, tMs - startMs);
+      const distIn = dtIn * bulletSpeedPxMs;
+      return {
+        x: seg.origin.x + seg.direction.x * distIn,
+        y: seg.origin.y + seg.direction.y * distIn,
+        direction: seg.direction
+      };
+    }
+  }
+  const last = bullet.segments[bullet.segments.length - 1];
+  return {
+    x: last.origin.x + last.direction.x * last.distance,
+    y: last.origin.y + last.direction.y * last.distance,
+    direction: last.direction
+  };
+}
+
 function drawBullets() {
   const movement = state.snapshot?.match?.movement;
   if (!movement || state.snapshot.room.phase !== "movement") return;
   const bullets = movement.bullets || [];
   if (!bullets.length) return;
   const elapsed = currentPlaybackServerNow() - movement.startedAt;
-  const bulletSpeed = state.snapshot.config.bulletSpeed;
+  const bulletSpeedPxMs = state.snapshot.config.bulletSpeed / 1000;
+  const bulletRadius = (state.snapshot.config.bulletRadius || 6) * state.camera.zoom;
+
   bullets.forEach((bullet) => {
     const localElapsed = elapsed - bullet.fireTimeMs;
     if (localElapsed < 0) return;
-    const travelMs = Math.min(localElapsed, bullet.stopTimeMs);
-    const travelDist = (travelMs / 1000) * bulletSpeed;
-    const currentPoint = {
-      x: bullet.origin.x + bullet.direction.x * travelDist,
-      y: bullet.origin.y + bullet.direction.y * travelDist
+    const head = bulletStateAtTime(bullet, localElapsed, bulletSpeedPxMs);
+    if (!head) return;
+    const tail = {
+      x: head.x - head.direction.x * 28,
+      y: head.y - head.direction.y * 28
     };
-    const head = worldToScreen(currentPoint);
-    const tail = worldToScreen({
-      x: currentPoint.x - bullet.direction.x * 28,
-      y: currentPoint.y - bullet.direction.y * 28
-    });
+    const headScr = worldToScreen(head);
+    const tailScr = worldToScreen(tail);
     ctx.strokeStyle = "rgba(6, 4, 3, 0.98)";
     ctx.lineWidth = 4;
     ctx.beginPath();
-    ctx.moveTo(tail.x, tail.y);
-    ctx.lineTo(head.x, head.y);
+    ctx.moveTo(tailScr.x, tailScr.y);
+    ctx.lineTo(headScr.x, headScr.y);
     ctx.stroke();
     ctx.strokeStyle = "rgba(120, 52, 28, 0.98)";
     ctx.lineWidth = 1.25;
     ctx.beginPath();
-    ctx.moveTo(tail.x, tail.y);
-    ctx.lineTo(head.x, head.y);
+    ctx.moveTo(tailScr.x, tailScr.y);
+    ctx.lineTo(headScr.x, headScr.y);
     ctx.stroke();
-    const bulletRadius = (state.snapshot.config.bulletRadius || 6) * state.camera.zoom;
     ctx.fillStyle = "rgba(28, 16, 8, 0.95)";
     ctx.beginPath();
-    ctx.arc(head.x, head.y, bulletRadius, 0, Math.PI * 2);
+    ctx.arc(headScr.x, headScr.y, bulletRadius, 0, Math.PI * 2);
     ctx.fill();
     ctx.strokeStyle = "rgba(255, 224, 196, 0.55)";
     ctx.lineWidth = 1;
     ctx.beginPath();
-    ctx.arc(head.x, head.y, bulletRadius, 0, Math.PI * 2);
+    ctx.arc(headScr.x, headScr.y, bulletRadius, 0, Math.PI * 2);
     ctx.stroke();
   });
 }
