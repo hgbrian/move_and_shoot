@@ -1947,9 +1947,6 @@ function simulateShooting(room, actionMap) {
             room.match.kills[killRecord.shooterId] += 1;
           }
         }
-        if (room.mode === "br" && room.match) {
-          room.match.kills[player.id] = 0;
-        }
       }
     }
   }
@@ -2413,7 +2410,7 @@ async function handleJoin(request, response) {
   const requestedMapGridSize = sanitizeMapGridSize(body.mapGridSize);
   const isPractice = !!body.practice;
   const wantsPrivateBr = requestedMode === "br" && !!body.private;
-  const requestedLineOfSight = body.lineOfSight !== false;
+  const requestedLineOfSight = body.lineOfSight === true;
 
   let room = null;
   let desiredCode = "";
@@ -2612,7 +2609,6 @@ async function handleRespawn(request, response) {
     if (!room.match.participantIds.includes(player.id)) {
       room.match.participantIds.push(player.id);
     }
-    room.match.kills[player.id] = 0;
   }
   notifyRoomChange(room);
   json(response, 200, { ok: true });
