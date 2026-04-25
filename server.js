@@ -1793,6 +1793,7 @@ function simulateShooting(room, actionMap) {
   }
 
   const bullets = [];
+  const killRecords = {};
   let bulletSerial = 1;
   for (const shooter of players) {
     const s = sim[shooter.id];
@@ -1815,24 +1816,24 @@ function simulateShooting(room, actionMap) {
 
     const segments = [];
     let cumDistBeforeSeg = 0;
-    let hitVictim = null;
-    let hitTotalTimeMs = null;
-    let hitTotalDist = null;
+    const hitVictims = new Set();
+    const hitEvents = [];
 
     for (let i = 0; i < rawSegments.length; i += 1) {
       const seg = rawSegments[i];
       const segStartTimeMs = cumDistBeforeSeg / bulletSpeedPxMs;
       const segEndTimeMs = (cumDistBeforeSeg + seg.distance) / bulletSpeedPxMs;
 
-      let bestFoundDtMs = null;
-      let bestVictim = null;
+      const segmentHits = [];
       for (const target of players) {
         if (target.id === shooter.id && i === 0) continue;
+        if (hitVictims.has(target.id)) continue;
         const t = sim[target.id];
         if (!t.alive) continue;
         if (t.deathAtMs !== null && t.deathAtMs <= segStartTimeMs) continue;
         const samples = 40;
         const segDuration = segEndTimeMs - segStartTimeMs;
+        let targetHitTimeMs = null;
         for (let k = 1; k <= samples; k += 1) {
           const dtIn = (k / samples) * segDuration;
           const dtAbs = segStartTimeMs + dtIn;
@@ -1842,27 +1843,21 @@ function simulateShooting(room, actionMap) {
           if (t.deathAtMs !== null && dtAbs >= t.deathAtMs) break;
           const d = Math.hypot(bx - t.pos.x, by - t.pos.y);
           if (d < radius + CONFIG.bulletRadius) {
-            if (bestFoundDtMs === null || dtAbs < bestFoundDtMs) {
-              bestFoundDtMs = dtAbs;
-              bestVictim = target.id;
-            }
+            targetHitTimeMs = dtAbs;
             break;
           }
         }
+        if (targetHitTimeMs !== null) {
+          segmentHits.push({ victimId: target.id, timeMs: targetHitTimeMs });
+        }
       }
 
-      if (bestVictim) {
-        hitVictim = bestVictim;
-        hitTotalTimeMs = bestFoundDtMs;
-        hitTotalDist = bestFoundDtMs * bulletSpeedPxMs;
-        const stoppedSegDist = (bestFoundDtMs - segStartTimeMs) * bulletSpeedPxMs;
-        segments.push({
-          origin: seg.origin,
-          direction: seg.direction,
-          distance: stoppedSegDist,
-          startTimeMs: Math.round(segStartTimeMs)
-        });
-        break;
+      if (segmentHits.length) {
+        segmentHits.sort((a, b) => a.timeMs - b.timeMs);
+        for (const hit of segmentHits) {
+          hitVictims.add(hit.victimId);
+          hitEvents.push(hit);
+        }
       }
 
       segments.push({
@@ -1874,9 +1869,7 @@ function simulateShooting(room, actionMap) {
       cumDistBeforeSeg += seg.distance;
     }
 
-    const totalDist = hitTotalDist !== null
-      ? hitTotalDist
-      : segments.reduce((sum, s2) => sum + s2.distance, 0);
+    const totalDist = segments.reduce((sum, s2) => sum + s2.distance, 0);
     const stopTimeMs = totalDist / bulletSpeedPxMs;
 
     const bulletId = `bullet-${room.round.number}-${room.round.turnNumber}-${bulletSerial++}`;
@@ -1888,11 +1881,26 @@ function simulateShooting(room, actionMap) {
       segments,
       stopTimeMs,
       stopDistance: totalDist,
-      victimId: hitVictim
+      hits: hitEvents.map((hit) => ({
+        victimId: hit.victimId,
+        timeMs: Math.round(hit.timeMs)
+      }))
     });
 
-    if (hitVictim) {
-      sim[hitVictim].deathAtMs = hitTotalTimeMs;
+    for (const hit of hitEvents) {
+      const victim = sim[hit.victimId];
+      if (!victim) continue;
+      if (victim.deathAtMs === null || hit.timeMs < victim.deathAtMs) {
+        victim.deathAtMs = hit.timeMs;
+      }
+      const existingRecord = killRecords[hit.victimId];
+      if (!existingRecord || hit.timeMs < existingRecord.timeMs) {
+        killRecords[hit.victimId] = {
+          shooterId: shooter.id,
+          bulletId,
+          timeMs: hit.timeMs
+        };
+      }
     }
   }
 
@@ -1901,11 +1909,8 @@ function simulateShooting(room, actionMap) {
   const elapsedBeforeShots = room.round.roundStartedAt ? nowMs() - room.round.roundStartedAt : 0;
   for (const player of players) {
     const s = sim[player.id];
-    let killerId = null;
-    if (s.deathAtMs !== null) {
-      const killBullet = bullets.find((b) => b.victimId === player.id);
-      if (killBullet) killerId = killBullet.shooterId;
-    }
+    const killRecord = killRecords[player.id] || null;
+    const killerId = killRecord ? killRecord.shooterId : null;
     byPlayer[player.id] = {
       diedAtMs: s.deathAtMs !== null ? Math.round(s.deathAtMs) : null,
       killerId,
@@ -1915,17 +1920,16 @@ function simulateShooting(room, actionMap) {
       player.roundAlive = false;
       player.spectating = true;
       player.roundDeathAtMs = elapsedBeforeShots + s.deathAtMs;
-      const killBullet = bullets.find((b) => b.victimId === player.id);
-      if (killBullet) {
-        if (killBullet.shooterId !== player.id) {
+      if (killRecord) {
+        if (killRecord.shooterId !== player.id) {
           kills.push({
-            shooterId: killBullet.shooterId,
+            shooterId: killRecord.shooterId,
             victimId: player.id,
-            timeMs: Math.round(s.deathAtMs),
-            bulletId: killBullet.id
+            timeMs: Math.round(killRecord.timeMs),
+            bulletId: killRecord.bulletId
           });
-          if (room.mode === "br" && room.match && room.match.kills[killBullet.shooterId] !== undefined) {
-            room.match.kills[killBullet.shooterId] += 1;
+          if (room.mode === "br" && room.match && room.match.kills[killRecord.shooterId] !== undefined) {
+            room.match.kills[killRecord.shooterId] += 1;
           }
         }
         if (room.mode === "br" && room.match) {
@@ -1940,7 +1944,7 @@ function simulateShooting(room, actionMap) {
     const end = b.fireTimeMs + b.stopTimeMs;
     if (end > lastEventMs) lastEventMs = end;
   }
-  const durationMs = Math.max(Math.round(lastEventMs + 900), 1200);
+  const durationMs = Math.max(0, Math.round(lastEventMs));
 
   return { byPlayer, bullets, kills, durationMs };
 }

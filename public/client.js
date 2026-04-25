@@ -93,7 +93,9 @@ const state = {
     originX: 0,
     originY: 0,
     mode: "spectator"
-  }
+  },
+  seenKillNoticeKeys: new Set(),
+  killNoticeQueue: []
 };
 
 const FIXED_VIEW_SHORT_SIDE = 900;
@@ -1444,6 +1446,8 @@ function render() {
   ctx.restore();
   drawSpectatorHint();
   drawOverlayText();
+  checkKillNotices();
+  drawKillNotice();
   checkDeathNotice();
   drawDeathNotice();
   renderHud();
@@ -1463,6 +1467,61 @@ const DEATH_FLAVOR = [
   "got dropped by",
   "made history dying to"
 ];
+
+function checkKillNotices() {
+  if (!state.snapshot) return;
+  if (state.snapshot.room.phase !== "shooting") return;
+  const shooting = state.snapshot.match?.shooting;
+  if (!shooting?.kills?.length) return;
+  const elapsed = currentPlaybackServerNow() - shooting.startedAt;
+  const myKills = shooting.kills.filter((kill) => kill.shooterId === state.snapshot.you.id);
+  for (const kill of myKills) {
+    if (elapsed < kill.timeMs) continue;
+    const key =
+      kill.bulletId ||
+      `${state.snapshot.match.currentRound}-${state.snapshot.match.turnNumber}-${kill.victimId}`;
+    if (state.seenKillNoticeKeys.has(key)) continue;
+    state.seenKillNoticeKeys.add(key);
+    const victim = state.snapshot.players.find((player) => player.id === kill.victimId);
+    const text = victim ? `You dropped ${victim.name}` : "You got a kill";
+    pushMessage(`${text}.`);
+    state.killNoticeQueue.push(text);
+  }
+}
+
+function drawKillNotice() {
+  if (!state.killNotice && state.killNoticeQueue.length) {
+    state.killNotice = {
+      text: state.killNoticeQueue.shift(),
+      startMs: performance.now()
+    };
+  }
+
+  const notice = state.killNotice;
+  if (!notice) return;
+  const age = performance.now() - notice.startMs;
+  const lifeMs = 2200;
+  if (age > lifeMs) {
+    state.killNotice = null;
+    return;
+  }
+  const t = age / lifeMs;
+  const fadeIn = Math.min(1, age / 140);
+  const fadeOut = t > 0.72 ? (1 - t) / 0.28 : 1;
+  const alpha = fadeIn * fadeOut;
+  const yOffset = 18 + (1 - fadeIn) * 18;
+  const cx = window.innerWidth / 2;
+  const cy = window.innerHeight * 0.32 + yOffset;
+  ctx.save();
+  ctx.textAlign = "center";
+  ctx.font = "900 30px Trebuchet MS";
+  ctx.lineWidth = 6;
+  ctx.strokeStyle = `rgba(20, 12, 8, ${alpha * 0.7})`;
+  ctx.strokeText(notice.text, cx, cy);
+  ctx.fillStyle = `rgba(45, 106, 79, ${alpha})`;
+  ctx.fillText(notice.text, cx, cy);
+  ctx.restore();
+}
 
 function checkDeathNotice() {
   if (!state.snapshot) return;
