@@ -1111,14 +1111,14 @@ function drawBullets() {
     const headScr = worldToScreen(head);
     const tailScr = worldToScreen(tail);
     ctx.lineCap = "round";
-    ctx.strokeStyle = "rgba(6, 4, 3, 0.98)";
-    ctx.lineWidth = bulletRadius * 1.5;
+    ctx.strokeStyle = "rgba(6, 4, 3, 0.95)";
+    ctx.lineWidth = Math.max(2, bulletRadius * 0.55);
     ctx.beginPath();
     ctx.moveTo(tailScr.x, tailScr.y);
     ctx.lineTo(headScr.x, headScr.y);
     ctx.stroke();
-    ctx.strokeStyle = "rgba(255, 224, 196, 0.55)";
-    ctx.lineWidth = bulletRadius * 0.4;
+    ctx.strokeStyle = "rgba(255, 224, 196, 0.6)";
+    ctx.lineWidth = Math.max(0.8, bulletRadius * 0.18);
     ctx.beginPath();
     ctx.moveTo(tailScr.x, tailScr.y);
     ctx.lineTo(headScr.x, headScr.y);

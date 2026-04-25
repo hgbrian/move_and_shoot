@@ -19,6 +19,7 @@ const CONFIG = {
   brMapGridSize: 10,
   brKillTarget: 10,
   bulletRadius: 8,
+  bulletMaxFlightMs: 5000,
   movementMs: 2_000,
   roundEndPauseMs: 3_000,
   screenSize: 1200,
@@ -906,18 +907,57 @@ function rayVsAxisAlignedRect(origin, direction, minX, maxX, minY, maxY) {
   return tMin >= 0 ? tMin : tMax >= 0 ? 0 : null;
 }
 
+function rayVsRectWithFace(origin, direction, minX, maxX, minY, maxY) {
+  let tEnterX = -Infinity, tExitX = Infinity;
+  let tEnterY = -Infinity, tExitY = Infinity;
+  if (Math.abs(direction.x) > 1e-9) {
+    const t1 = (minX - origin.x) / direction.x;
+    const t2 = (maxX - origin.x) / direction.x;
+    tEnterX = Math.min(t1, t2);
+    tExitX = Math.max(t1, t2);
+  } else if (origin.x < minX || origin.x > maxX) {
+    return null;
+  }
+  if (Math.abs(direction.y) > 1e-9) {
+    const t1 = (minY - origin.y) / direction.y;
+    const t2 = (maxY - origin.y) / direction.y;
+    tEnterY = Math.min(t1, t2);
+    tExitY = Math.max(t1, t2);
+  } else if (origin.y < minY || origin.y > maxY) {
+    return null;
+  }
+  const tEnter = Math.max(tEnterX, tEnterY);
+  const tExit = Math.min(tExitX, tExitY);
+  if (tEnter > tExit || tExit < 0) return null;
+  const useEnter = tEnter >= 0;
+  const t = useEnter ? tEnter : tExit;
+  const axis = useEnter
+    ? (tEnterX >= tEnterY ? "x" : "y")
+    : (tExitX <= tExitY ? "x" : "y");
+  let normal;
+  if (axis === "x") {
+    normal = direction.x > 0 ? (useEnter ? { x: -1, y: 0 } : { x: 1, y: 0 })
+                              : (useEnter ? { x: 1, y: 0 } : { x: -1, y: 0 });
+  } else {
+    normal = direction.y > 0 ? (useEnter ? { x: 0, y: -1 } : { x: 0, y: 1 })
+                              : (useEnter ? { x: 0, y: 1 } : { x: 0, y: -1 });
+  }
+  return { t, normal };
+}
+
 function simulateBouncingBullet(origin, direction, map, maxBounces) {
   const segments = [];
   let curOrigin = { x: origin.x, y: origin.y };
   let curDir = { x: direction.x, y: direction.y };
   let prevSig = "";
+  let prevPrevSig = "";
   for (let bounce = 0; bounce < maxBounces; bounce += 1) {
     let nearestT = Infinity;
     let hitNormal = null;
     for (const building of map.buildings) {
       const localOrigin = rotateIntoLocal(curOrigin, building);
       const localDir = rotateVectorIntoLocal(curDir, building);
-      const t = rayVsAxisAlignedRect(
+      const hit = rayVsRectWithFace(
         localOrigin,
         localDir,
         -building.halfWidth,
@@ -925,21 +965,9 @@ function simulateBouncingBullet(origin, direction, map, maxBounces) {
         -building.halfHeight,
         building.halfHeight
       );
-      if (t === null || t <= 0.01 || t >= nearestT) continue;
-      const hx = localOrigin.x + localDir.x * t;
-      const hy = localOrigin.y + localDir.y * t;
-      let nLocal;
-      const dxMin = Math.abs(hx + building.halfWidth);
-      const dxMax = Math.abs(hx - building.halfWidth);
-      const dyMin = Math.abs(hy + building.halfHeight);
-      const dyMax = Math.abs(hy - building.halfHeight);
-      const minSide = Math.min(dxMin, dxMax, dyMin, dyMax);
-      if (minSide === dxMin) nLocal = { x: -1, y: 0 };
-      else if (minSide === dxMax) nLocal = { x: 1, y: 0 };
-      else if (minSide === dyMin) nLocal = { x: 0, y: -1 };
-      else nLocal = { x: 0, y: 1 };
-      nearestT = t;
-      hitNormal = rotateLocalVectorToWorld(nLocal, building);
+      if (!hit || hit.t <= 0.01 || hit.t >= nearestT) continue;
+      nearestT = hit.t;
+      hitNormal = rotateLocalVectorToWorld(hit.normal, building);
     }
 
     let worldT = Infinity;
@@ -992,7 +1020,8 @@ function simulateBouncingBullet(origin, direction, map, maxBounces) {
     curDir = reflected;
 
     const sig = `${Math.round(curOrigin.x / 4)}|${Math.round(curOrigin.y / 4)}|${Math.round(curDir.x * 50)}|${Math.round(curDir.y * 50)}`;
-    if (sig === prevSig) break;
+    if (sig === prevSig && sig === prevPrevSig) break;
+    prevPrevSig = prevSig;
     prevSig = sig;
   }
   return segments;
@@ -1751,7 +1780,23 @@ function simulateMovement(room, actionMap) {
 
     const origin = posAt(shooter.id, fireTimeMs);
     const direction = normalizeVector(s.aimDir, { x: 0, y: -1 });
-    const rawSegments = simulateBouncingBullet(origin, direction, map, 30);
+    const allSegments = simulateBouncingBullet(origin, direction, map, 30);
+    if (!allSegments.length) continue;
+
+    const maxFlightDist = bulletSpeedPxMs * CONFIG.bulletMaxFlightMs;
+    const rawSegments = [];
+    let cappedDist = 0;
+    for (const seg of allSegments) {
+      const remaining = maxFlightDist - cappedDist;
+      if (remaining <= 0) break;
+      if (seg.distance >= remaining) {
+        rawSegments.push({ origin: seg.origin, direction: seg.direction, distance: remaining, terminal: true });
+        cappedDist += remaining;
+        break;
+      }
+      rawSegments.push(seg);
+      cappedDist += seg.distance;
+    }
     if (!rawSegments.length) continue;
 
     const segments = [];
@@ -1885,7 +1930,7 @@ function simulateMovement(room, actionMap) {
       player.roundAlive = false;
       player.spectating = true;
       player.roundDeathAtMs = elapsedBeforeShots + s.deathAtMs;
-      const bullet = bullets.find((b) => b.victimId === player.id);
+      const bullet = bullets.find((b) => b.victimId === player.id && b.shooterId !== player.id);
       if (bullet) {
         kills.push({
           shooterId: bullet.shooterId,
