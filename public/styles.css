@@ -85,6 +85,18 @@ body {
   gap: 8px;
 }
 
+.checkbox-field span {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.checkbox-field input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
+}
+
 .field input {
   width: 100%;
   padding: 14px 16px;

@@ -8,6 +8,7 @@ const UI_ELEMENTS = {
   mapSizeInput: "map-size-input",
   totalRoundsInput: "total-rounds-input",
   botCountInput: "bot-count-input",
+  lineOfSightInput: "line-of-sight-input",
   roomCodeInput: "room-code-input",
   createRoomButton: "create-room-button",
   joinRoomButton: "join-room-button",
@@ -753,6 +754,9 @@ async function joinRoom(roomCode, options = {}) {
   }
   payload.mapGridSize = Number(ui.mapSizeInput.value) || 2;
   payload.totalRounds = Number(ui.totalRoundsInput.value) || 3;
+  if (!roomCode) {
+    payload.lineOfSight = !!ui.lineOfSightInput.checked;
+  }
   const requestedBots = !roomCode && !options.practice ? (Number(ui.botCountInput.value) || 0) : 0;
   if (requestedBots > 0) {
     payload.mode = "br";
@@ -1204,7 +1208,8 @@ function isAliveDuringPlayback(player) {
 
 function drawPlayer(player) {
   const position = getAnimatedPlayerPosition(player);
-  if (player.id !== state.snapshot.you.id && state.snapshot.you.alive) {
+  const lineOfSightEnabled = state.snapshot.room.settings.lineOfSight !== false;
+  if (lineOfSightEnabled && player.id !== state.snapshot.you.id && state.snapshot.you.alive) {
     const me = byId(state.snapshot.you.id) || state.snapshot.you;
     const myPos = getAnimatedPlayerPosition(me);
     const buildings = navCache.nav?.buildings;

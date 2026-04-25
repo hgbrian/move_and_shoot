@@ -1344,6 +1344,10 @@ function createFreshPlan(player) {
   };
 }
 
+function lineOfSightEnabled(room) {
+  return room?.settings?.lineOfSight !== false;
+}
+
 function resetPlayerForRound(player, spawnPoint) {
   player.roundAlive = true;
   player.spectating = false;
@@ -1398,7 +1402,9 @@ function generateBotPlan(room, bot) {
   const enemies = room.match.participantIds
     .map((id) => room.players.get(id))
     .filter((p) => p && p.id !== bot.id && p.roundAlive && !p.disconnected);
-  const visible = enemies.filter((e) => lineOfSightClear(bot, e, map));
+  const visible = lineOfSightEnabled(room)
+    ? enemies.filter((e) => lineOfSightClear(bot, e, map))
+    : enemies;
 
   let aimDir;
   let moveTarget;
@@ -1646,6 +1652,15 @@ function visibleEnemiesForPlayer(room, viewerId) {
   const viewer = room.players.get(viewerId);
   if (!viewer || !viewer.roundAlive) {
     return [];
+  }
+  if (!lineOfSightEnabled(room)) {
+    return room.match.participantIds.filter((playerId) => {
+      if (playerId === viewerId) {
+        return false;
+      }
+      const target = room.players.get(playerId);
+      return !!target && !!target.roundAlive;
+    });
   }
   const visible = [];
   for (const playerId of room.match.participantIds) {
@@ -2205,6 +2220,9 @@ function shouldRevealPlayerToViewer(room, viewer, target) {
   if (!viewer.roundAlive || viewer.spectating) {
     return true;
   }
+  if (!lineOfSightEnabled(room)) {
+    return true;
+  }
   if (room.phase === "planning") {
     return planningVisibilityForPlayer(room, viewer.id).includes(target.id);
   }
@@ -2395,6 +2413,7 @@ async function handleJoin(request, response) {
   const requestedMapGridSize = sanitizeMapGridSize(body.mapGridSize);
   const isPractice = !!body.practice;
   const wantsPrivateBr = requestedMode === "br" && !!body.private;
+  const requestedLineOfSight = body.lineOfSight !== false;
 
   let room = null;
   let desiredCode = "";
@@ -2434,6 +2453,7 @@ async function handleJoin(request, response) {
           ? (fixedMapGridSize || 2)
           : requestedMapGridSize || CONFIG.defaultMapGridSize,
       fixedMapGridSize,
+      lineOfSight: requestedLineOfSight,
       killTarget: requestedMode === "br" ? (killTargetOverride || CONFIG.brKillTarget) : 0,
       totalRounds: requestedMode === "br" ? null : totalRounds
     };
