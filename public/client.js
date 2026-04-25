@@ -15,6 +15,7 @@ const UI_ELEMENTS = {
   roomCodeLabel: "room-code-label",
   phaseLabel: "phase-label",
   timerLabel: "timer-label",
+  roundLabelTitle: "round-label-title",
   roundLabel: "round-label",
   turnLabel: "turn-label",
   readyLabel: "ready-label",
@@ -678,9 +679,9 @@ function ensureCamera() {
   if (!state.camera.zoom) {
     state.camera.zoom = computeCameraZoom();
   }
-  if (state.snapshot.you.alive) {
-    const target = getCameraTarget();
-    const localShotBullet = getLocalShotBullet();
+  const localShotBullet = getLocalShotBullet();
+  if (state.snapshot.you.alive || localShotBullet) {
+    const target = localShotBullet ? getCameraTarget() : getCameraTarget();
     state.camera.zoom = computeCameraZoom();
     state.camera.panX = 0;
     state.camera.panY = 0;
@@ -946,10 +947,14 @@ function renderHud() {
   ui.timerLabel.textContent = state.snapshot.room.phase === "planning"
     ? formatSeconds(getPhaseTimeRemaining())
     : "—";
+  const isBr = state.snapshot.room.mode === "br";
+  ui.roundLabelTitle.textContent = isBr ? "Target" : "Round";
   ui.roundLabel.textContent = state.snapshot.match.active
-    ? state.snapshot.match.totalRounds
-      ? `${state.snapshot.match.currentRound} / ${state.snapshot.match.totalRounds}`
-      : `${state.snapshot.match.currentRound}`
+    ? isBr
+      ? `First to ${state.snapshot.room.settings.killTarget || 5}`
+      : state.snapshot.match.totalRounds
+        ? `${state.snapshot.match.currentRound} / ${state.snapshot.match.totalRounds}`
+        : `${state.snapshot.match.currentRound}`
     : "—";
   ui.turnLabel.textContent = state.snapshot.match.active
     ? String(state.snapshot.match.turnNumber || "-")
@@ -960,13 +965,12 @@ function renderHud() {
       ? "Planning"
       : "Spectating";
   const leaderWins = Math.max(0, ...state.snapshot.players.map((player) => player.wins || 0));
-  const isBr = state.snapshot.room.mode === "br";
   const showLobbyActions = state.snapshot.you.isHost && state.snapshot.room.phase === "lobby";
   if (isBr) {
     const kills = state.snapshot.match?.kills || {};
     const myKills = kills[state.snapshot.you.id] ?? 0;
-    const better = Object.values(kills).filter((k) => k > myKills).length;
-    ui.scoreLabel.textContent = `${myKills}K · ${ordinal(better + 1)}`;
+    const target = state.snapshot.room.settings.killTarget || 5;
+    ui.scoreLabel.textContent = `${myKills}K / ${target}K`;
   } else {
     ui.scoreLabel.textContent = `${state.snapshot.you.wins || 0}W / ${leaderWins}W`;
   }
@@ -1478,6 +1482,13 @@ const DEATH_FLAVOR = [
   "made history dying to"
 ];
 
+const KILL_FLAVOR = [
+  (name) => `You dropped ${name}`,
+  (name) => `${name} ate lead`,
+  (name) => `You put ${name} in the dirt`,
+  (name) => `${name} hit the floor`
+];
+
 function checkKillNotices() {
   if (!state.snapshot) return;
   if (state.snapshot.room.phase !== "shooting") return;
@@ -1485,6 +1496,7 @@ function checkKillNotices() {
   if (!shooting?.kills?.length) return;
   const elapsed = currentPlaybackServerNow() - shooting.startedAt;
   const myKills = shooting.kills.filter((kill) => kill.shooterId === state.snapshot.you.id);
+  const newlyTriggered = [];
   for (const kill of myKills) {
     if (elapsed < kill.timeMs) continue;
     const key =
@@ -1493,10 +1505,38 @@ function checkKillNotices() {
     if (state.seenKillNoticeKeys.has(key)) continue;
     state.seenKillNoticeKeys.add(key);
     const victim = state.snapshot.players.find((player) => player.id === kill.victimId);
-    const text = victim ? `You dropped ${victim.name}` : "You got a kill";
+    newlyTriggered.push(victim ? victim.name : "Unknown");
+  }
+
+  if (!newlyTriggered.length) {
+    return;
+  }
+
+  if (newlyTriggered.length === 1) {
+    const text = KILL_FLAVOR[Math.floor(Math.random() * KILL_FLAVOR.length)](newlyTriggered[0]);
     pushMessage(`${text}.`);
     state.killNoticeQueue.push(text);
+    return;
   }
+
+  const multikillLabel =
+    newlyTriggered.length === 2
+      ? "Double kill"
+      : newlyTriggered.length === 3
+        ? "Triple kill"
+        : `${newlyTriggered.length} kills`;
+  const victimsText =
+    newlyTriggered.length === 2
+      ? `${newlyTriggered[0]} and ${newlyTriggered[1]}`
+      : `${newlyTriggered.slice(0, -1).join(", ")}, and ${newlyTriggered[newlyTriggered.length - 1]}`;
+  pushMessage(`${multikillLabel}: ${victimsText}.`);
+  state.killNoticeQueue.push(
+    newlyTriggered.length === 2
+      ? "Two down"
+      : newlyTriggered.length === 3
+        ? "Three down"
+        : multikillLabel
+  );
 }
 
 function drawKillNotice() {

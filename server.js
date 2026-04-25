@@ -2261,8 +2261,8 @@ function buildState(player) {
       phaseDurationMs: room.phaseDurationMs || null,
       connectedCount: connectedPlayers(room).length,
       playerCount: players.length,
-      minPlayers: CONFIG.minPlayers,
-      maxPlayers: CONFIG.maxPlayers
+      minPlayers: room.testMode ? 1 : CONFIG.minPlayers,
+      maxPlayers: room.mode === "br" ? CONFIG.brMaxPlayers : CONFIG.maxPlayers
     },
     you: {
       id: player.id,
@@ -2488,6 +2488,10 @@ async function handleJoin(request, response) {
     for (let i = 0; i < Math.min(botCount, 32); i += 1) {
       addBotToRoom(room);
     }
+  }
+
+  if (isPractice && room.mode === "br" && !room.match) {
+    startBrMatch(room);
   }
 
   notifyRoomChange(room);
