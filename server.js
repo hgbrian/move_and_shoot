@@ -1725,13 +1725,11 @@ function simulateMovement(room, actionMap) {
   const map = room.round.map;
   const radius = CONFIG.playerRadius;
   const speedPxMs = CONFIG.moveRange / CONFIG.movementMs;
-  const bulletSpeedPxMs = CONFIG.bulletSpeed / 1000;
   const players = room.match.participantIds
     .map((playerId) => room.players.get(playerId))
     .filter(Boolean);
 
-  const sim = {};
-  let maxFinishMs = 0;
+  const byPlayer = {};
   for (const player of players) {
     const action = actionMap[player.id];
     const startPos = { x: player.x, y: player.y };
@@ -1743,42 +1741,64 @@ function simulateMovement(room, actionMap) {
       pathLen = pathLength(path);
     }
     const finishMs = pathLen / speedPxMs;
-    const aimDir = action ? action.aimDir : (player.lastAimDir || { x: 0, y: -1 });
-    sim[player.id] = {
-      id: player.id,
-      path,
-      pathLen,
-      finishMs,
-      aimDir,
-      startPos,
-      alive: !!player.roundAlive && !player.disconnected,
-      willShoot: !!action && !!player.roundAlive && !player.disconnected,
-      deathAtMs: null,
-      hitByBulletId: null,
-      hadAction: !!action
+    const samples = [{ timeMs: 0, x: startPos.x, y: startPos.y }];
+    if (pathLen > 0) {
+      const stepCount = Math.max(1, Math.ceil(pathLen / 4));
+      for (let k = 1; k <= stepCount; k += 1) {
+        const dist = (k / stepCount) * pathLen;
+        const tMs = dist / speedPxMs;
+        if (tMs > finishMs + 0.5) break;
+        const p = pointAtDistanceAlongPath(path, dist);
+        samples.push({ timeMs: Math.round(tMs), x: p.x, y: p.y });
+      }
+    }
+    const finalPos = pointAtDistanceAlongPath(path, pathLen);
+    if (samples[samples.length - 1].timeMs !== Math.round(finishMs)) {
+      samples.push({ timeMs: Math.round(finishMs), x: finalPos.x, y: finalPos.y });
+    }
+    byPlayer[player.id] = {
+      start: startPos,
+      end: { x: finalPos.x, y: finalPos.y },
+      haltedAtMs: Math.round(finishMs),
+      hadAction: !!action,
+      samples
     };
-    if (finishMs > maxFinishMs) maxFinishMs = finishMs;
+    player.x = finalPos.x;
+    player.y = finalPos.y;
   }
 
-  function posAt(playerId, tMs) {
-    const s = sim[playerId];
-    const deathCap = s.deathAtMs !== null ? s.deathAtMs : Infinity;
-    const travelMs = Math.min(tMs, s.finishMs, deathCap);
-    return pointAtDistanceAlongPath(s.path, Math.max(0, travelMs) * speedPxMs);
+  return { byPlayer, durationMs: CONFIG.movementMs };
+}
+
+function simulateShooting(room, actionMap) {
+  const map = room.round.map;
+  const radius = CONFIG.playerRadius;
+  const bulletSpeedPxMs = CONFIG.bulletSpeed / 1000;
+  const players = room.match.participantIds
+    .map((playerId) => room.players.get(playerId))
+    .filter(Boolean);
+
+  const sim = {};
+  for (const player of players) {
+    const action = actionMap[player.id];
+    sim[player.id] = {
+      id: player.id,
+      pos: { x: player.x, y: player.y },
+      color: player.color,
+      aimDir: action ? action.aimDir : (player.lastAimDir || { x: 0, y: -1 }),
+      alive: !!player.roundAlive && !player.disconnected,
+      willShoot: !!action && !!player.roundAlive && !player.disconnected,
+      deathAtMs: null
+    };
   }
 
   const bullets = [];
   let bulletSerial = 1;
-  const shooters = players.slice();
-  const uniformFireTimeMs = CONFIG.movementMs;
-
-  for (const shooter of shooters) {
+  for (const shooter of players) {
     const s = sim[shooter.id];
     if (!s.willShoot) continue;
-    const fireTimeMs = uniformFireTimeMs;
-    if (s.deathAtMs !== null && s.deathAtMs <= fireTimeMs) continue;
 
-    const origin = posAt(shooter.id, fireTimeMs);
+    const origin = { x: s.pos.x, y: s.pos.y };
     const direction = normalizeVector(s.aimDir, { x: 0, y: -1 });
     const allSegments = simulateBouncingBullet(origin, direction, map, 30);
     if (!allSegments.length) continue;
@@ -1796,10 +1816,8 @@ function simulateMovement(room, actionMap) {
     const segments = [];
     let cumDistBeforeSeg = 0;
     let hitVictim = null;
-    let hitTotalDist = null;
     let hitTotalTimeMs = null;
-    let stoppedSegIdx = rawSegments.length - 1;
-    let stoppedSegDist = rawSegments[rawSegments.length - 1].distance;
+    let hitTotalDist = null;
 
     for (let i = 0; i < rawSegments.length; i += 1) {
       const seg = rawSegments[i];
@@ -1809,10 +1827,10 @@ function simulateMovement(room, actionMap) {
       let bestFoundDtMs = null;
       let bestVictim = null;
       for (const target of players) {
-        if (target.id === shooter.id) continue;
+        if (target.id === shooter.id && i === 0) continue;
         const t = sim[target.id];
         if (!t.alive) continue;
-        if (t.deathAtMs !== null && t.deathAtMs <= fireTimeMs + segStartTimeMs) continue;
+        if (t.deathAtMs !== null && t.deathAtMs <= segStartTimeMs) continue;
         const samples = 40;
         const segDuration = segEndTimeMs - segStartTimeMs;
         for (let k = 1; k <= samples; k += 1) {
@@ -1821,10 +1839,8 @@ function simulateMovement(room, actionMap) {
           const distIn = dtIn * bulletSpeedPxMs;
           const bx = seg.origin.x + seg.direction.x * distIn;
           const by = seg.origin.y + seg.direction.y * distIn;
-          const targetTimeMs = fireTimeMs + dtAbs;
-          if (t.deathAtMs !== null && targetTimeMs >= t.deathAtMs) break;
-          const tp = posAt(target.id, targetTimeMs);
-          const d = Math.hypot(bx - tp.x, by - tp.y);
+          if (t.deathAtMs !== null && dtAbs >= t.deathAtMs) break;
+          const d = Math.hypot(bx - t.pos.x, by - t.pos.y);
           if (d < radius + CONFIG.bulletRadius) {
             if (bestFoundDtMs === null || dtAbs < bestFoundDtMs) {
               bestFoundDtMs = dtAbs;
@@ -1839,8 +1855,7 @@ function simulateMovement(room, actionMap) {
         hitVictim = bestVictim;
         hitTotalTimeMs = bestFoundDtMs;
         hitTotalDist = bestFoundDtMs * bulletSpeedPxMs;
-        stoppedSegIdx = i;
-        stoppedSegDist = (bestFoundDtMs - segStartTimeMs) * bulletSpeedPxMs;
+        const stoppedSegDist = (bestFoundDtMs - segStartTimeMs) * bulletSpeedPxMs;
         segments.push({
           origin: seg.origin,
           direction: seg.direction,
@@ -1868,7 +1883,8 @@ function simulateMovement(room, actionMap) {
     bullets.push({
       id: bulletId,
       shooterId: shooter.id,
-      fireTimeMs,
+      fireTimeMs: 0,
+      color: s.color,
       segments,
       stopTimeMs,
       stopDistance: totalDist,
@@ -1876,81 +1892,55 @@ function simulateMovement(room, actionMap) {
     });
 
     if (hitVictim) {
-      const v = sim[hitVictim];
-      v.deathAtMs = fireTimeMs + hitTotalTimeMs;
-      v.hitByBulletId = bulletId;
+      sim[hitVictim].deathAtMs = hitTotalTimeMs;
     }
   }
 
   const byPlayer = {};
   const kills = [];
   const elapsedBeforeShots = room.round.roundStartedAt ? nowMs() - room.round.roundStartedAt : 0;
-
   for (const player of players) {
     const s = sim[player.id];
-    const endTimeMs = s.deathAtMs !== null ? Math.min(s.deathAtMs, s.finishMs) : s.finishMs;
-    const samples = [{ timeMs: 0, x: s.startPos.x, y: s.startPos.y }];
-    if (s.pathLen > 0 && endTimeMs > 0) {
-      const stepCount = Math.max(1, Math.ceil(s.pathLen / 4));
-      for (let k = 1; k <= stepCount; k++) {
-        const dist = (k / stepCount) * s.pathLen;
-        const tMs = dist / speedPxMs;
-        if (tMs > endTimeMs + 0.5) break;
-        const p = pointAtDistanceAlongPath(s.path, dist);
-        samples.push({ timeMs: Math.round(tMs), x: p.x, y: p.y });
-      }
-    }
-    const finalPos = pointAtDistanceAlongPath(s.path, Math.max(0, endTimeMs) * speedPxMs);
-    const last = samples[samples.length - 1];
-    if (last.timeMs !== Math.round(endTimeMs)) {
-      samples.push({ timeMs: Math.round(endTimeMs), x: finalPos.x, y: finalPos.y });
-    }
     let killerId = null;
     if (s.deathAtMs !== null) {
       const killBullet = bullets.find((b) => b.victimId === player.id);
       if (killBullet) killerId = killBullet.shooterId;
     }
     byPlayer[player.id] = {
-      start: s.startPos,
-      end: { x: finalPos.x, y: finalPos.y },
-      haltedAtMs: Math.round(endTimeMs),
       diedAtMs: s.deathAtMs !== null ? Math.round(s.deathAtMs) : null,
       killerId,
-      hadAction: s.hadAction,
-      samples
+      pos: { x: s.pos.x, y: s.pos.y }
     };
-
     if (s.deathAtMs !== null && player.roundAlive) {
       player.roundAlive = false;
       player.spectating = true;
       player.roundDeathAtMs = elapsedBeforeShots + s.deathAtMs;
-      const bullet = bullets.find((b) => b.victimId === player.id && b.shooterId !== player.id);
-      if (bullet) {
-        kills.push({
-          shooterId: bullet.shooterId,
-          victimId: player.id,
-          timeMs: Math.round(s.deathAtMs),
-          bulletId: bullet.id
-        });
-        if (room.mode === "br" && room.match) {
-          if (room.match.kills[bullet.shooterId] !== undefined) {
-            room.match.kills[bullet.shooterId] += 1;
+      const killBullet = bullets.find((b) => b.victimId === player.id);
+      if (killBullet) {
+        if (killBullet.shooterId !== player.id) {
+          kills.push({
+            shooterId: killBullet.shooterId,
+            victimId: player.id,
+            timeMs: Math.round(s.deathAtMs),
+            bulletId: killBullet.id
+          });
+          if (room.mode === "br" && room.match && room.match.kills[killBullet.shooterId] !== undefined) {
+            room.match.kills[killBullet.shooterId] += 1;
           }
+        }
+        if (room.mode === "br" && room.match) {
           room.match.kills[player.id] = 0;
         }
       }
     }
-
-    player.x = finalPos.x;
-    player.y = finalPos.y;
   }
 
-  let lastEventMs = maxFinishMs;
+  let lastEventMs = 0;
   for (const b of bullets) {
     const end = b.fireTimeMs + b.stopTimeMs;
     if (end > lastEventMs) lastEventMs = end;
   }
-  const durationMs = Math.max(Math.round(lastEventMs + 900), 1000);
+  const durationMs = Math.max(Math.round(lastEventMs + 900), 1200);
 
   return { byPlayer, bullets, kills, durationMs };
 }
@@ -1988,11 +1978,22 @@ function beginMovement(room) {
     startedAt: nowMs(),
     durationMs: result.durationMs,
     byPlayer: result.byPlayer,
-    bullets: result.bullets,
-    kills: result.kills,
     actionMap
   };
-  setPhase(room, "movement", result.durationMs, "Action");
+  setPhase(room, "movement", result.durationMs, "Movement");
+}
+
+function beginShooting(room) {
+  const actionMap = room.round.currentTurn.movement?.actionMap || buildActionMap(room);
+  const result = simulateShooting(room, actionMap);
+  room.round.currentTurn.shooting = {
+    startedAt: nowMs(),
+    durationMs: result.durationMs,
+    byPlayer: result.byPlayer,
+    bullets: result.bullets,
+    kills: result.kills
+  };
+  setPhase(room, "shooting", result.durationMs, "Shooting");
 }
 
 function finalizeRound(room) {
@@ -2136,6 +2137,11 @@ function updateRoom(room) {
   }
 
   if (room.phase === "movement" && room.phaseEndsAt && now >= room.phaseEndsAt) {
+    beginShooting(room);
+    return;
+  }
+
+  if (room.phase === "shooting" && room.phaseEndsAt && now >= room.phaseEndsAt) {
     const aliveCount = room.match.participantIds
       .map((playerId) => room.players.get(playerId))
       .filter((player) => player && player.roundAlive).length;
@@ -2292,6 +2298,7 @@ function buildState(player) {
               }
             : null,
           movement: room.round?.currentTurn?.movement || null,
+          shooting: room.round?.currentTurn?.shooting || null,
           roundWins: room.match.roundWins,
           totalSurvivalMs: room.match.totalSurvivalMs
         }

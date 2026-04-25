@@ -588,7 +588,7 @@ function visiblePlayers() {
 }
 
 function getAnimatedPlayerPosition(player) {
-  if (!state.snapshot?.match?.active || !state.snapshot.match.movement || !state.snapshot.match.map) {
+  if (!state.snapshot?.match?.active || !state.snapshot.match.map) {
     return { x: player.x, y: player.y };
   }
 
@@ -630,11 +630,11 @@ function getAnimatedPlayerPosition(player) {
 function getCameraTarget() {
   if (!state.snapshot) return { x: 0, y: 0 };
   const you = byId(state.snapshot.you.id) || state.snapshot.you;
-  if (state.snapshot.room.phase === "movement") {
+  if (state.snapshot.room.phase === "shooting") {
     const localBullet = getLocalShotBullet();
     if (localBullet) {
-      const movement = state.snapshot.match.movement;
-      const elapsed = currentPlaybackServerNow() - movement.startedAt;
+      const shooting = state.snapshot.match.shooting;
+      const elapsed = currentPlaybackServerNow() - shooting.startedAt;
       const localElapsed = elapsed - localBullet.fireTimeMs;
       if (localElapsed >= 0) {
         const bulletSpeedPxMs = state.snapshot.config.bulletSpeed / 1000;
@@ -650,11 +650,11 @@ function getCameraTarget() {
 }
 
 function getLocalShotBullet() {
-  if (!state.snapshot || state.snapshot.room.phase !== "movement") return null;
-  const movement = state.snapshot.match?.movement;
-  if (!movement?.bullets?.length) return null;
-  const elapsed = currentPlaybackServerNow() - movement.startedAt;
-  const own = movement.bullets.find((b) => b.shooterId === state.snapshot.you.id);
+  if (!state.snapshot || state.snapshot.room.phase !== "shooting") return null;
+  const shooting = state.snapshot.match?.shooting;
+  if (!shooting?.bullets?.length) return null;
+  const elapsed = currentPlaybackServerNow() - shooting.startedAt;
+  const own = shooting.bullets.find((b) => b.shooterId === state.snapshot.you.id);
   if (!own) return null;
   if (elapsed < own.fireTimeMs) return null;
   return own;
@@ -831,7 +831,14 @@ function handleSnapshot(snapshot) {
         clientStartPerfMs: performance.now(),
         durationMs: snapshot.match.movement.durationMs
       };
-    } else if (snapshot.room.phase !== "movement") {
+    } else if (snapshot.room.phase === "shooting" && snapshot.match?.shooting) {
+      state.playback = {
+        phase: "shooting",
+        serverStartMs: snapshot.match.shooting.startedAt,
+        clientStartPerfMs: performance.now(),
+        durationMs: snapshot.match.shooting.durationMs
+      };
+    } else {
       state.playback = {
         phase: "",
         serverStartMs: 0,
@@ -839,7 +846,7 @@ function handleSnapshot(snapshot) {
         durationMs: 0
       };
     }
-    if (snapshot.room.phase === "movement" && snapshot.match?.movement?.bullets?.length) {
+    if (snapshot.room.phase === "shooting" && snapshot.match?.shooting?.bullets?.length) {
       sounds.shoot();
     }
     pushMessage(snapshot.room.phaseLabel);
@@ -880,6 +887,7 @@ function handleSnapshot(snapshot) {
     state.draftMoveTarget = snapshot.planning?.plan?.moveTarget || null;
     state.draftAimDir = snapshot.planning?.plan?.aimDir || snapshot.you.lastAimDir || { x: 0, y: -1 };
     state.finalCommitSent = false;
+    state.planLocked = false;
   }
 
   if (previous && previous.players && snapshot.players) {
@@ -1091,11 +1099,11 @@ function bulletStateAtTime(bullet, localElapsedMs, bulletSpeedPxMs) {
 }
 
 function drawBullets() {
-  const movement = state.snapshot?.match?.movement;
-  if (!movement || state.snapshot.room.phase !== "movement") return;
-  const bullets = movement.bullets || [];
+  const shooting = state.snapshot?.match?.shooting;
+  if (!shooting || state.snapshot.room.phase !== "shooting") return;
+  const bullets = shooting.bullets || [];
   if (!bullets.length) return;
-  const elapsed = currentPlaybackServerNow() - movement.startedAt;
+  const elapsed = currentPlaybackServerNow() - shooting.startedAt;
   const bulletSpeedPxMs = state.snapshot.config.bulletSpeed / 1000;
   const bulletRadius = (state.snapshot.config.bulletRadius || 6) * state.camera.zoom;
 
@@ -1111,18 +1119,28 @@ function drawBullets() {
     const headScr = worldToScreen(head);
     const tailScr = worldToScreen(tail);
     ctx.lineCap = "round";
-    ctx.strokeStyle = "rgba(6, 4, 3, 0.95)";
+    ctx.strokeStyle = bullet.color || "rgba(28, 16, 8, 0.95)";
     ctx.lineWidth = Math.max(2, bulletRadius * 0.55);
     ctx.beginPath();
     ctx.moveTo(tailScr.x, tailScr.y);
     ctx.lineTo(headScr.x, headScr.y);
     ctx.stroke();
-    ctx.strokeStyle = "rgba(255, 224, 196, 0.6)";
+    ctx.strokeStyle = "rgba(255, 244, 220, 0.55)";
     ctx.lineWidth = Math.max(0.8, bulletRadius * 0.18);
     ctx.beginPath();
     ctx.moveTo(tailScr.x, tailScr.y);
     ctx.lineTo(headScr.x, headScr.y);
     ctx.stroke();
+    if (localElapsed >= bullet.stopTimeMs) {
+      const sinceStop = Math.min(localElapsed - bullet.stopTimeMs, 500);
+      const t = sinceStop / 500;
+      const r = bulletRadius * (1 + t * 3);
+      ctx.strokeStyle = `rgba(180, 50, 30, ${1 - t})`;
+      ctx.lineWidth = 2 * (1 - t);
+      ctx.beginPath();
+      ctx.arc(headScr.x, headScr.y, r, 0, Math.PI * 2);
+      ctx.stroke();
+    }
   });
 }
 
@@ -1156,10 +1174,11 @@ function getDrawAimDir(player) {
 
 function isAliveDuringPlayback(player) {
   if (player.alive) return true;
-  if (state.snapshot.room.phase !== "movement") return false;
-  const entry = state.snapshot.match?.movement?.byPlayer?.[player.id];
+  if (state.snapshot.room.phase !== "shooting") return false;
+  const shooting = state.snapshot.match?.shooting;
+  const entry = shooting?.byPlayer?.[player.id];
   if (!entry || entry.diedAtMs === null || entry.diedAtMs === undefined) return false;
-  const elapsed = currentPlaybackServerNow() - state.snapshot.match.movement.startedAt;
+  const elapsed = currentPlaybackServerNow() - shooting.startedAt;
   return elapsed < entry.diedAtMs;
 }
 
@@ -1278,23 +1297,16 @@ function drawPlayers() {
 }
 
 function drawDeathBurst(player) {
-  if (state.snapshot.room.phase !== "movement") return;
-  const movement = state.snapshot.match?.movement;
-  const entry = movement?.byPlayer?.[player.id];
+  if (state.snapshot.room.phase !== "shooting") return;
+  const shooting = state.snapshot.match?.shooting;
+  const entry = shooting?.byPlayer?.[player.id];
   if (!entry || entry.diedAtMs === null || entry.diedAtMs === undefined) return;
-  const elapsed = currentPlaybackServerNow() - movement.startedAt;
+  const elapsed = currentPlaybackServerNow() - shooting.startedAt;
   const burstMs = 700;
   const sinceDeath = elapsed - entry.diedAtMs;
   if (sinceDeath < 0 || sinceDeath > burstMs) return;
 
-  const deathPos = entry.end;
-  if (player.id !== state.snapshot.you.id && state.snapshot.you.alive) {
-    const me = byId(state.snapshot.you.id) || state.snapshot.you;
-    const myPos = getAnimatedPlayerPosition(me);
-    const buildings = navCache.nav?.buildings;
-    if (!lineOfSightClearClient(myPos, deathPos, buildings)) return;
-  }
-
+  const deathPos = entry.pos || { x: player.x, y: player.y };
   const screen = worldToScreen(deathPos);
   const t = clamp(sinceDeath / burstMs, 0, 1);
   const ease = 1 - (1 - t) * (1 - t);
@@ -1450,12 +1462,12 @@ const DEATH_FLAVOR = [
 
 function checkDeathNotice() {
   if (!state.snapshot) return;
-  if (state.snapshot.room.phase !== "movement") return;
-  const movement = state.snapshot.match?.movement;
-  if (!movement) return;
-  const myEntry = movement.byPlayer?.[state.snapshot.you.id];
+  if (state.snapshot.room.phase !== "shooting") return;
+  const shooting = state.snapshot.match?.shooting;
+  if (!shooting) return;
+  const myEntry = shooting.byPlayer?.[state.snapshot.you.id];
   if (!myEntry || myEntry.diedAtMs === null || myEntry.diedAtMs === undefined) return;
-  const elapsed = currentPlaybackServerNow() - movement.startedAt;
+  const elapsed = currentPlaybackServerNow() - shooting.startedAt;
   if (elapsed < myEntry.diedAtMs) return;
   const key = `${state.snapshot.match.currentRound}-${state.snapshot.match.turnNumber}`;
   if (state.deathNoticeKey === key) return;
@@ -1463,11 +1475,15 @@ function checkDeathNotice() {
   const killer = myEntry.killerId
     ? state.snapshot.players.find((p) => p.id === myEntry.killerId)
     : null;
-  const flavor = DEATH_FLAVOR[Math.floor(Math.random() * DEATH_FLAVOR.length)];
-  state.deathNotice = {
-    text: killer ? `You ${flavor} ${killer.name}` : "You died",
-    startMs: performance.now()
-  };
+  let text;
+  if (killer && killer.id === state.snapshot.you.id) {
+    const own = ["Bounced your own bullet into yourself", "Shot yourself, smooth", "Friendly fire — you're dead", "Your own ricochet got you"];
+    text = own[Math.floor(Math.random() * own.length)];
+  } else {
+    const flavor = DEATH_FLAVOR[Math.floor(Math.random() * DEATH_FLAVOR.length)];
+    text = killer ? `You ${flavor} ${killer.name}` : "You died";
+  }
+  state.deathNotice = { text, startMs: performance.now() };
 }
 
 function drawDeathNotice() {
@@ -1507,7 +1523,7 @@ const PHASE_LABELS = {
 
 function renderPhaseBanner() {
   const phase = state.snapshot?.room?.phase;
-  const active = !!state.snapshot?.match?.active || phase === "lobby_countdown" || phase === "round_countdown" || phase === "planning" || phase === "movement";
+  const active = !!state.snapshot?.match?.active || phase === "lobby_countdown" || phase === "round_countdown" || phase === "planning" || phase === "movement" || phase === "shooting";
   if (!phase || !active) {
     ui.phaseBanner.classList.add("hidden");
     return;
@@ -1546,6 +1562,7 @@ function checkPlanningTimeout() {
     endPlanDrag();
   }
   forceCommitCurrentDraft();
+  state.planLocked = true;
 }
 
 function getCanvasPoint(event) {
@@ -1570,6 +1587,7 @@ function updatePlanDraftFromScreenPoint(point, mode) {
   if (!state.snapshot?.match?.active || !state.snapshot.you.alive || !pointInsidePlayArea(point)) {
     return false;
   }
+  if (state.planLocked) return false;
   const world = screenToWorld(point);
   if (mode === "move") {
     state.draftMoveTarget = clampMoveTarget(world);
