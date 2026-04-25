@@ -1131,6 +1131,15 @@ function getDrawAimDir(player) {
   return { x: Math.cos(blended), y: Math.sin(blended) };
 }
 
+function isAliveDuringPlayback(player) {
+  if (player.alive) return true;
+  if (state.snapshot.room.phase !== "movement") return false;
+  const entry = state.snapshot.match?.movement?.byPlayer?.[player.id];
+  if (!entry || entry.diedAtMs === null || entry.diedAtMs === undefined) return false;
+  const elapsed = currentPlaybackServerNow() - state.snapshot.match.movement.startedAt;
+  return elapsed < entry.diedAtMs;
+}
+
 function drawPlayer(player) {
   const position = getAnimatedPlayerPosition(player);
   if (player.id !== state.snapshot.you.id && state.snapshot.you.alive) {
@@ -1141,7 +1150,7 @@ function drawPlayer(player) {
   }
   const screen = worldToScreen(position);
   const radius = state.snapshot.config.playerRadius * state.camera.zoom;
-  const alive = player.alive;
+  const alive = isAliveDuringPlayback(player);
   const brimRadius = radius;
   const crownRadius = radius * 0.55;
   const aimDir = getDrawAimDir(player);

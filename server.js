@@ -24,7 +24,7 @@ const CONFIG = {
   screenSize: 1200,
   defaultMapGridSize: 2,
   defaultBuildingCount: 30,
-  playerRadius: 18,
+  playerRadius: 20,
   moveRange: 720,
   bulletSpeed: 1600,
   planAimPreviewLength: 90,
@@ -1719,6 +1719,7 @@ function simulateMovement(room, actionMap) {
       start: s.startPos,
       end: { x: finalPos.x, y: finalPos.y },
       haltedAtMs: Math.round(endTimeMs),
+      diedAtMs: s.deathAtMs !== null ? Math.round(s.deathAtMs) : null,
       hadAction: s.hadAction,
       samples
     };
