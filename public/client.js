@@ -7,6 +7,7 @@ const UI_ELEMENTS = {
   playerNameInput: "player-name-input",
   mapSizeInput: "map-size-input",
   totalRoundsInput: "total-rounds-input",
+  botCountInput: "bot-count-input",
   roomCodeInput: "room-code-input",
   createRoomButton: "create-room-button",
   joinRoomButton: "join-room-button",
@@ -751,6 +752,9 @@ async function joinRoom(roomCode, options = {}) {
   }
   payload.mapGridSize = Number(ui.mapSizeInput.value) || 2;
   payload.totalRounds = Number(ui.totalRoundsInput.value) || 3;
+  if (!roomCode && options.mode !== "br" && !options.practice) {
+    payload.bots = Number(ui.botCountInput.value) || 0;
+  }
   if (options.mode === "br") {
     payload.mode = "br";
   }
