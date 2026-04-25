@@ -593,7 +593,11 @@ function getAnimatedPlayerPosition(player) {
   }
 
   const movement = state.snapshot.match.movement;
-  const entry = movement.byPlayer?.[player.id];
+  if (!movement?.byPlayer) {
+    return { x: player.x, y: player.y };
+  }
+
+  const entry = movement.byPlayer[player.id];
   if (!entry) {
     return { x: player.x, y: player.y };
   }
