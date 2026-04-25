@@ -969,8 +969,8 @@ function renderHud() {
   if (isBr) {
     const kills = state.snapshot.match?.kills || {};
     const myKills = kills[state.snapshot.you.id] ?? 0;
-    const target = state.snapshot.room.settings.killTarget || 5;
-    ui.scoreLabel.textContent = `${myKills}K / ${target}K`;
+    const better = Object.values(kills).filter((k) => k > myKills).length;
+    ui.scoreLabel.textContent = `${myKills}K · ${ordinal(better + 1)}`;
   } else {
     ui.scoreLabel.textContent = `${state.snapshot.you.wins || 0}W / ${leaderWins}W`;
   }
