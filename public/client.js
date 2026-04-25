@@ -1497,7 +1497,7 @@ function checkKillNotices() {
   if (!shooting?.kills?.length) return;
   const elapsed = currentPlaybackServerNow() - shooting.startedAt;
   const myKills = shooting.kills.filter((kill) => kill.shooterId === state.snapshot.you.id);
-  const newlyTriggered = [];
+  const shotGroups = new Map();
   for (const kill of myKills) {
     if (elapsed < kill.timeMs) continue;
     const key =
@@ -1506,38 +1506,28 @@ function checkKillNotices() {
     if (state.seenKillNoticeKeys.has(key)) continue;
     state.seenKillNoticeKeys.add(key);
     const victim = state.snapshot.players.find((player) => player.id === kill.victimId);
-    newlyTriggered.push(victim ? victim.name : "Unknown");
+    const shotKey = kill.bulletId || key;
+    if (!shotGroups.has(shotKey)) {
+      shotGroups.set(shotKey, []);
+    }
+    shotGroups.get(shotKey).push(victim ? victim.name : "Unknown");
   }
 
-  if (!newlyTriggered.length) {
-    return;
-  }
+  for (const victims of shotGroups.values()) {
+    if (victims.length === 1) {
+      const text = KILL_FLAVOR[Math.floor(Math.random() * KILL_FLAVOR.length)](victims[0]);
+      pushMessage(`${text}.`);
+      state.killNoticeQueue.push(text);
+      continue;
+    }
 
-  if (newlyTriggered.length === 1) {
-    const text = KILL_FLAVOR[Math.floor(Math.random() * KILL_FLAVOR.length)](newlyTriggered[0]);
-    pushMessage(`${text}.`);
-    state.killNoticeQueue.push(text);
-    return;
+    const victimsText =
+      victims.length === 2
+        ? `${victims[0]} and ${victims[1]}`
+        : `${victims.slice(0, -1).join(", ")}, and ${victims[victims.length - 1]}`;
+    pushMessage(`That shot got ${victims.length} kills: ${victimsText}.`);
+    state.killNoticeQueue.push(`${victims.length} KILLS`);
   }
-
-  const multikillLabel =
-    newlyTriggered.length === 2
-      ? "Double kill"
-      : newlyTriggered.length === 3
-        ? "Triple kill"
-        : `${newlyTriggered.length} kills`;
-  const victimsText =
-    newlyTriggered.length === 2
-      ? `${newlyTriggered[0]} and ${newlyTriggered[1]}`
-      : `${newlyTriggered.slice(0, -1).join(", ")}, and ${newlyTriggered[newlyTriggered.length - 1]}`;
-  pushMessage(`${multikillLabel}: ${victimsText}.`);
-  state.killNoticeQueue.push(
-    newlyTriggered.length === 2
-      ? "Two down"
-      : newlyTriggered.length === 3
-        ? "Three down"
-        : multikillLabel
-  );
 }
 
 function drawKillNotice() {
