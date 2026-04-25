@@ -1090,6 +1090,16 @@ function drawBullets() {
     ctx.moveTo(tail.x, tail.y);
     ctx.lineTo(head.x, head.y);
     ctx.stroke();
+    const bulletRadius = (state.snapshot.config.bulletRadius || 6) * state.camera.zoom;
+    ctx.fillStyle = "rgba(28, 16, 8, 0.95)";
+    ctx.beginPath();
+    ctx.arc(head.x, head.y, bulletRadius, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = "rgba(255, 224, 196, 0.55)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(head.x, head.y, bulletRadius, 0, Math.PI * 2);
+    ctx.stroke();
   });
 }
 

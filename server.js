@@ -18,6 +18,7 @@ const CONFIG = {
   brMaxPlayers: 100,
   brMapGridSize: 10,
   brKillTarget: 10,
+  bulletRadius: 8,
   movementMs: 2_000,
   roundEndPauseMs: 3_000,
   screenSize: 1200,
@@ -1660,7 +1661,7 @@ function simulateMovement(room, actionMap) {
         if (t.deathAtMs !== null && targetTimeMs >= t.deathAtMs) break;
         const targetPos = posAt(target.id, targetTimeMs);
         const d = Math.hypot(bulletPos.x - targetPos.x, bulletPos.y - targetPos.y);
-        if (d < radius) { found = dtMs; break; }
+        if (d < radius + CONFIG.bulletRadius) { found = dtMs; break; }
       }
       if (found !== null && found < hitTimeMs) {
         hitTimeMs = found;
@@ -2036,6 +2037,7 @@ function buildState(player) {
       planningMs: CONFIG.planningMs,
       movementMs: CONFIG.movementMs,
       bulletSpeed: CONFIG.bulletSpeed,
+      bulletRadius: CONFIG.bulletRadius,
       screenSize: CONFIG.screenSize
     },
     room: {
@@ -2212,7 +2214,7 @@ async function handleJoin(request, response) {
     const totalRounds = [1, 3, 5, 7].includes(rawRounds) ? rawRounds : CONFIG.totalRounds;
     const rawKillTarget = Number(body.killTarget);
     const killTargetOverride = [3, 5, 7, 10, 15, 20].includes(rawKillTarget) ? rawKillTarget : null;
-    const fixedMapGridSize = isPractice ? 3 : null;
+    const fixedMapGridSize = isPractice ? 2 : null;
     room.settings = {
       mapGridSize:
         requestedMode === "br"
