@@ -2118,7 +2118,11 @@ function updateRoom(room) {
       return;
     }
     if (room.phaseEndsAt && now >= room.phaseEndsAt) {
-      startMatch(room);
+      if (room.mode === "br") {
+        startBrMatch(room);
+      } else {
+        startMatch(room);
+      }
     }
     return;
   }
@@ -2390,10 +2394,11 @@ async function handleJoin(request, response) {
   const requestedName = sanitizePlayerName(body.name);
   const requestedMapGridSize = sanitizeMapGridSize(body.mapGridSize);
   const isPractice = !!body.practice;
+  const wantsPrivateBr = requestedMode === "br" && !!body.private;
 
   let room = null;
   let desiredCode = "";
-  if (requestedMode === "br" && !isPractice) {
+  if (requestedMode === "br" && !isPractice && !wantsPrivateBr) {
     room = findAvailableBrRoom();
     desiredCode = room ? room.code : "";
   } else if (requestedMode === "turn") {
@@ -2407,7 +2412,7 @@ async function handleJoin(request, response) {
 
   if (
     room &&
-    room.mode === "turn" &&
+    (room.mode === "turn" || room.private) &&
     room.match &&
     !["lobby", "lobby_countdown", "match_end"].includes(room.phase)
   ) {
@@ -2432,7 +2437,7 @@ async function handleJoin(request, response) {
       killTarget: requestedMode === "br" ? (killTargetOverride || CONFIG.brKillTarget) : 0,
       totalRounds: requestedMode === "br" ? null : totalRounds
     };
-    if (isPractice) room.private = true;
+    if (isPractice || wantsPrivateBr) room.private = true;
     rooms.set(code, room);
   }
 
@@ -2474,7 +2479,7 @@ async function handleJoin(request, response) {
     playerId: player.id
   });
 
-  if (room.mode === "br") {
+  if (room.mode === "br" && (!room.private || room.match)) {
     addBrParticipant(room, player);
   }
 
@@ -2628,7 +2633,7 @@ function addBotToRoom(room) {
     }
   };
   room.players.set(bot.id, bot);
-  if (room.mode === "br") {
+  if (room.mode === "br" && (!room.private || room.match)) {
     addBrParticipant(room, bot);
   }
   return bot;

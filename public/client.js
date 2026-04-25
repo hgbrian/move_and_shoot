@@ -752,8 +752,14 @@ async function joinRoom(roomCode, options = {}) {
   }
   payload.mapGridSize = Number(ui.mapSizeInput.value) || 2;
   payload.totalRounds = Number(ui.totalRoundsInput.value) || 3;
-  if (!roomCode && options.mode !== "br" && !options.practice) {
-    payload.bots = Number(ui.botCountInput.value) || 0;
+  const requestedBots = !roomCode && !options.practice ? (Number(ui.botCountInput.value) || 0) : 0;
+  if (requestedBots > 0) {
+    payload.mode = "br";
+    payload.private = true;
+    payload.bots = requestedBots;
+    payload.killTarget = 5;
+  } else if (!roomCode && options.mode !== "br" && !options.practice) {
+    payload.bots = 0;
   }
   if (options.mode === "br") {
     payload.mode = "br";
@@ -955,6 +961,7 @@ function renderHud() {
       : "Spectating";
   const leaderWins = Math.max(0, ...state.snapshot.players.map((player) => player.wins || 0));
   const isBr = state.snapshot.room.mode === "br";
+  const showLobbyActions = state.snapshot.you.isHost && state.snapshot.room.phase === "lobby";
   if (isBr) {
     const kills = state.snapshot.match?.kills || {};
     const myKills = kills[state.snapshot.you.id] ?? 0;
@@ -966,11 +973,10 @@ function renderHud() {
   const connectedPlayers = state.snapshot.players.filter((player) => player.connected);
   const rosterNames = connectedPlayers.map((player) => player.name).join(", ") || "—";
   ui.playersLabel.textContent = `${connectedPlayers.length}/${state.snapshot.room.maxPlayers}: ${rosterNames}`;
-  ui.topActionSlot.classList.toggle(
-    "hidden",
-    isBr || !(state.snapshot.you.isHost && state.snapshot.room.phase === "lobby")
-  );
-  if (!isBr) {
+  ui.topActionSlot.classList.toggle("hidden", !showLobbyActions);
+  ui.startTestButton.classList.toggle("hidden", isBr);
+  ui.addBotButton.classList.toggle("hidden", isBr);
+  if (showLobbyActions) {
     ui.startGameButton.disabled = state.snapshot.room.connectedCount < state.snapshot.room.minPlayers;
     ui.startGameButton.textContent =
       state.snapshot.room.connectedCount < state.snapshot.room.minPlayers
