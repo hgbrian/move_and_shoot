@@ -1715,11 +1715,17 @@ function simulateMovement(room, actionMap) {
     if (last.timeMs !== Math.round(endTimeMs)) {
       samples.push({ timeMs: Math.round(endTimeMs), x: finalPos.x, y: finalPos.y });
     }
+    let killerId = null;
+    if (s.deathAtMs !== null) {
+      const killBullet = bullets.find((b) => b.victimId === player.id);
+      if (killBullet) killerId = killBullet.shooterId;
+    }
     byPlayer[player.id] = {
       start: s.startPos,
       end: { x: finalPos.x, y: finalPos.y },
       haltedAtMs: Math.round(endTimeMs),
       diedAtMs: s.deathAtMs !== null ? Math.round(s.deathAtMs) : null,
+      killerId,
       hadAction: s.hadAction,
       samples
     };

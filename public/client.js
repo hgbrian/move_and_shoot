@@ -212,6 +212,17 @@ function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
+function ordinal(n) {
+  const v = n % 100;
+  if (v >= 11 && v <= 13) return `${n}th`;
+  switch (n % 10) {
+    case 1: return `${n}st`;
+    case 2: return `${n}nd`;
+    case 3: return `${n}rd`;
+    default: return `${n}th`;
+  }
+}
+
 function lerp(a, b, t) {
   return a + (b - a) * t;
 }
@@ -931,9 +942,10 @@ function renderHud() {
   const leaderWins = Math.max(0, ...state.snapshot.players.map((player) => player.wins || 0));
   const isBr = state.snapshot.room.mode === "br";
   if (isBr) {
-    const myKills = state.snapshot.match?.kills?.[state.snapshot.you.id] ?? 0;
-    const topKills = Math.max(0, ...Object.values(state.snapshot.match?.kills || { _: 0 }));
-    ui.scoreLabel.textContent = `${myKills}K / ${topKills}K`;
+    const kills = state.snapshot.match?.kills || {};
+    const myKills = kills[state.snapshot.you.id] ?? 0;
+    const better = Object.values(kills).filter((k) => k > myKills).length;
+    ui.scoreLabel.textContent = `${myKills}K · ${ordinal(better + 1)}`;
   } else {
     ui.scoreLabel.textContent = `${state.snapshot.you.wins || 0}W / ${leaderWins}W`;
   }
@@ -1249,6 +1261,70 @@ function drawPlayers() {
   visiblePlayers().forEach((player) => {
     drawPlayer(player);
   });
+  visiblePlayers().forEach((player) => {
+    drawDeathBurst(player);
+  });
+}
+
+function drawDeathBurst(player) {
+  if (state.snapshot.room.phase !== "movement") return;
+  const movement = state.snapshot.match?.movement;
+  const entry = movement?.byPlayer?.[player.id];
+  if (!entry || entry.diedAtMs === null || entry.diedAtMs === undefined) return;
+  const elapsed = currentPlaybackServerNow() - movement.startedAt;
+  const burstMs = 700;
+  const sinceDeath = elapsed - entry.diedAtMs;
+  if (sinceDeath < 0 || sinceDeath > burstMs) return;
+
+  const deathPos = entry.end;
+  if (player.id !== state.snapshot.you.id && state.snapshot.you.alive) {
+    const me = byId(state.snapshot.you.id) || state.snapshot.you;
+    const myPos = getAnimatedPlayerPosition(me);
+    const buildings = navCache.nav?.buildings;
+    if (!lineOfSightClearClient(myPos, deathPos, buildings)) return;
+  }
+
+  const screen = worldToScreen(deathPos);
+  const t = clamp(sinceDeath / burstMs, 0, 1);
+  const ease = 1 - (1 - t) * (1 - t);
+  const alpha = 1 - t;
+  const zoom = state.camera.zoom;
+  const baseRadius = state.snapshot.config.playerRadius * zoom;
+
+  const ringRadius = baseRadius * (1 + ease * 4);
+  ctx.strokeStyle = `rgba(180, 50, 30, ${alpha})`;
+  ctx.lineWidth = 8 * (1 - t * 0.6);
+  ctx.beginPath();
+  ctx.arc(screen.x, screen.y, ringRadius, 0, Math.PI * 2);
+  ctx.stroke();
+
+  ctx.strokeStyle = `rgba(255, 200, 80, ${alpha * 0.8})`;
+  ctx.lineWidth = 5 * (1 - t * 0.7);
+  ctx.beginPath();
+  ctx.arc(screen.x, screen.y, ringRadius * 0.6, 0, Math.PI * 2);
+  ctx.stroke();
+
+  const numShards = 10;
+  const seed = (player.id.charCodeAt(player.id.length - 1) || 0) * 0.37;
+  for (let i = 0; i < numShards; i += 1) {
+    const angle = (i / numShards) * Math.PI * 2 + seed;
+    const dist = baseRadius * (1 + ease * 5);
+    const px = screen.x + Math.cos(angle) * dist;
+    const py = screen.y + Math.sin(angle) * dist;
+    const partRadius = baseRadius * 0.18 * (1 - t);
+    ctx.fillStyle = `rgba(120, 30, 18, ${alpha})`;
+    ctx.beginPath();
+    ctx.arc(px, py, partRadius, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  if (t < 0.3) {
+    const flashAlpha = (0.3 - t) / 0.3 * 0.7;
+    ctx.fillStyle = `rgba(255, 230, 180, ${flashAlpha})`;
+    ctx.beginPath();
+    ctx.arc(screen.x, screen.y, baseRadius * 1.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
 }
 
 function drawSpectatorHint() {
@@ -1341,10 +1417,70 @@ function render() {
   ctx.restore();
   drawSpectatorHint();
   drawOverlayText();
+  checkDeathNotice();
+  drawDeathNotice();
   renderHud();
   renderPhaseBanner();
   checkPlanningTimeout();
   state.animationFrame = requestAnimationFrame(render);
+}
+
+const DEATH_FLAVOR = [
+  "got smoked by",
+  "ate lead from",
+  "took a slug from",
+  "outdrawn by",
+  "got plugged by",
+  "lost the duel to",
+  "caught a bullet from",
+  "got dropped by",
+  "made history dying to"
+];
+
+function checkDeathNotice() {
+  if (!state.snapshot) return;
+  if (state.snapshot.room.phase !== "movement") return;
+  const movement = state.snapshot.match?.movement;
+  if (!movement) return;
+  const myEntry = movement.byPlayer?.[state.snapshot.you.id];
+  if (!myEntry || myEntry.diedAtMs === null || myEntry.diedAtMs === undefined) return;
+  const elapsed = currentPlaybackServerNow() - movement.startedAt;
+  if (elapsed < myEntry.diedAtMs) return;
+  const key = `${state.snapshot.match.currentRound}-${state.snapshot.match.turnNumber}`;
+  if (state.deathNoticeKey === key) return;
+  state.deathNoticeKey = key;
+  const killer = myEntry.killerId
+    ? state.snapshot.players.find((p) => p.id === myEntry.killerId)
+    : null;
+  const flavor = DEATH_FLAVOR[Math.floor(Math.random() * DEATH_FLAVOR.length)];
+  state.deathNotice = {
+    text: killer ? `You ${flavor} ${killer.name}` : "You died",
+    startMs: performance.now()
+  };
+}
+
+function drawDeathNotice() {
+  const notice = state.deathNotice;
+  if (!notice) return;
+  const age = performance.now() - notice.startMs;
+  const lifeMs = 3500;
+  if (age > lifeMs) { state.deathNotice = null; return; }
+  const t = age / lifeMs;
+  const fadeIn = Math.min(1, age / 200);
+  const fadeOut = t > 0.7 ? (1 - t) / 0.3 : 1;
+  const alpha = fadeIn * fadeOut;
+  const yOffset = -20 + (1 - fadeIn) * 20;
+  const cx = window.innerWidth / 2;
+  const cy = window.innerHeight / 2 + yOffset;
+  ctx.save();
+  ctx.textAlign = "center";
+  ctx.font = "900 38px Trebuchet MS";
+  ctx.lineWidth = 6;
+  ctx.strokeStyle = `rgba(20, 12, 8, ${alpha * 0.7})`;
+  ctx.strokeText(notice.text, cx, cy);
+  ctx.fillStyle = `rgba(220, 60, 40, ${alpha})`;
+  ctx.fillText(notice.text, cx, cy);
+  ctx.restore();
 }
 
 const PHASE_LABELS = {
