@@ -2279,7 +2279,7 @@ async function handleJoin(request, response) {
 
   const botCount = Number(body.bots) || 0;
   if (botCount > 0 && (isPractice || room.players.size === 1)) {
-    for (let i = 0; i < Math.min(botCount, 12); i += 1) {
+    for (let i = 0; i < Math.min(botCount, 32); i += 1) {
       addBotToRoom(room);
     }
   }
