@@ -26,6 +26,7 @@ const CONFIG = {
   screenSize: 1200,
   defaultMapGridSize: 2,
   defaultBuildingCount: 30,
+  maxBuildingCount: 400,
   playerRadius: 20,
   moveRange: 720,
   bulletSpeed: 1600,
@@ -422,9 +423,15 @@ function moveCircleWithSliding(current, delta, radius, map) {
 }
 
 const NAV_CELL_SIZE = 14;
+const MAX_NAV_CELLS = 160_000;
+
+function navCellSizeForMap(map) {
+  const area = Math.max(1, map.width * map.height);
+  return Math.max(NAV_CELL_SIZE, Math.ceil(Math.sqrt(area / MAX_NAV_CELLS)));
+}
 
 function buildNavGrid(map, radius) {
-  const cellSize = NAV_CELL_SIZE;
+  const cellSize = navCellSizeForMap(map);
   const cols = Math.ceil(map.width / cellSize);
   const rows = Math.ceil(map.height / cellSize);
   const walkable = new Uint8Array(cols * rows);
@@ -1276,7 +1283,7 @@ function sanitizeDynamicMapGridSize(rawValue) {
 function generateMap(mapGridSize) {
   const gridSize = sanitizeDynamicMapGridSize(mapGridSize);
   const buildingTarget = Math.min(
-    2000,
+    CONFIG.maxBuildingCount,
     Math.round(CONFIG.defaultBuildingCount * ((gridSize * gridSize) / 4))
   );
   const map = {
@@ -1723,7 +1730,7 @@ function resizeBrArena(room, nextGridSize) {
     ));
   } else if (map.width > oldWidth || map.height > oldHeight) {
     const targetCount = Math.min(
-      2000,
+      CONFIG.maxBuildingCount,
       Math.round(CONFIG.defaultBuildingCount * ((nextGridSize * nextGridSize) / 4))
     );
     const alivePlayers = room.match.participantIds
@@ -2670,8 +2677,9 @@ function removePlayerFromRoom(room, player) {
 
 function fillBrRoomWithBots(room) {
   if (!room || room.mode !== "br" || !room.settings?.fillBots) return;
+  const joinMatch = !!room.match;
   while (room.players.size < CONFIG.brMaxPlayers) {
-    const bot = addBotToRoom(room);
+    const bot = addBotToRoom(room, { joinMatch });
     if (!bot) break;
   }
 }
@@ -2927,7 +2935,7 @@ async function handleLeave(request, response) {
   json(response, 200, { ok: true });
 }
 
-function addBotToRoom(room) {
+function addBotToRoom(room, options = {}) {
   const cap = deathmatchPlayerCap(room);
   if (cap !== null && room.players.size >= cap) return null;
   const serial = globalPlayerSerial++;
@@ -2958,7 +2966,8 @@ function addBotToRoom(room) {
     }
   };
   room.players.set(bot.id, bot);
-  if (isDeathmatchMode(room) && (!room.private || room.match)) {
+  const joinMatch = options.joinMatch !== false;
+  if (joinMatch && isDeathmatchMode(room) && (!room.private || room.match)) {
     addBrParticipant(room, bot);
   }
   return bot;

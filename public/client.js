@@ -262,7 +262,13 @@ function lerpPoint(a, b, t) {
 }
 
 const NAV_CELL_SIZE = 14;
+const MAX_NAV_CELLS = 160000;
 const navCache = { mapKey: "", nav: null, buildings: null };
+
+function navCellSizeForMap(map) {
+  const area = Math.max(1, map.width * map.height);
+  return Math.max(NAV_CELL_SIZE, Math.ceil(Math.sqrt(area / MAX_NAV_CELLS)));
+}
 
 function buildingMetrics(building) {
   return {
@@ -321,7 +327,7 @@ function segmentClearForCircleClient(start, end, radius, map, buildings) {
 }
 
 function buildNavGridClient(map, radius) {
-  const cellSize = NAV_CELL_SIZE;
+  const cellSize = navCellSizeForMap(map);
   const cols = Math.ceil(map.width / cellSize);
   const rows = Math.ceil(map.height / cellSize);
   const walkable = new Uint8Array(cols * rows);
