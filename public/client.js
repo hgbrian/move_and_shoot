@@ -6,6 +6,7 @@ const UI_ELEMENTS = {
   hud: "hud",
   playerNameInput: "player-name-input",
   hatColorInput: "hat-color-input",
+  hatColor2Input: "hat-color-2-input",
   modeInput: "mode-input",
   mapSizeInput: "map-size-input",
   totalRoundsInput: "total-rounds-input",
@@ -776,6 +777,7 @@ async function joinRoom(roomCode, options = {}) {
     payload.name = name;
   }
   payload.hatColor = ui.hatColorInput.value;
+  payload.hatColor2 = ui.hatColor2Input.value;
   payload.mapGridSize = Number(ui.mapSizeInput.value) || 2;
   if (!roomCode) {
     payload.lineOfSight = !!ui.lineOfSightInput.checked;
@@ -789,9 +791,11 @@ async function joinRoom(roomCode, options = {}) {
   const firstTo = Number(ui.totalRoundsInput.value) || 5;
   if (requestedBots > 0) {
     payload.bots = requestedBots;
-    payload.killTarget = firstTo;
+    if (selectedMode !== "br") {
+      payload.killTarget = firstTo;
+    }
   }
-  if (!roomCode) {
+  if (!roomCode && selectedMode !== "br") {
     payload.killTarget = firstTo;
   }
   const result = await api("/api/join", { method: "POST", body: payload });
@@ -801,10 +805,14 @@ async function joinRoom(roomCode, options = {}) {
     alert("Ruby's belly");
   }
   localStorage.setItem("move-and-shoot-token", result.token);
-  ui.roomCodeInput.value = result.roomCode;
+  ui.roomCodeInput.value = selectedMode === "br" ? "" : result.roomCode;
   ui.menu.classList.add("hidden");
   ui.hud.classList.remove("hidden");
-  pushMessage(`Joined room ${result.roomCode} as ${result.name}.`);
+  pushMessage(
+    selectedMode === "br"
+      ? `Joined Battle Royale as ${result.name}.`
+      : `Joined room ${result.roomCode} as ${result.name}.`
+  );
   startPolling();
 }
 
@@ -968,16 +976,19 @@ function renderHud() {
   if (!state.snapshot) {
     return;
   }
-  ui.roomCodeLabel.textContent = state.snapshot.room.code;
+  const isBr = state.snapshot.room.mode === "br";
+  ui.roomCodeLabel.textContent = isBr ? "Battle Royale" : state.snapshot.room.code;
   ui.phaseLabel.textContent = state.snapshot.room.phaseLabel;
   ui.timerLabel.textContent = state.snapshot.room.phase === "planning"
     ? formatSeconds(getPhaseTimeRemaining())
     : "—";
   const isDeathmatch = isDeathmatchMode(state.snapshot.room.mode);
   const isTeam = isTeamMode(state.snapshot.room.mode);
-  ui.roundLabelTitle.textContent = isDeathmatch ? "Target" : "Round";
+  ui.roundLabelTitle.textContent = isBr ? "Mode" : (isDeathmatch ? "Target" : "Round");
   ui.roundLabel.textContent = state.snapshot.match.active
-    ? isDeathmatch
+    ? isBr
+      ? "Endless"
+      : isDeathmatch
       ? `First to ${state.snapshot.room.settings.killTarget || 5}`
       : state.snapshot.match.totalRounds
         ? `${state.snapshot.match.currentRound} / ${state.snapshot.match.totalRounds}`
@@ -1008,7 +1019,8 @@ function renderHud() {
   }
   const connectedPlayers = state.snapshot.players.filter((player) => player.connected);
   const rosterNames = connectedPlayers.map((player) => player.name).join(", ") || "—";
-  ui.playersLabel.textContent = `${connectedPlayers.length}/${state.snapshot.room.maxPlayers}: ${rosterNames}`;
+  const maxPlayers = state.snapshot.room.maxPlayers === null ? "∞" : state.snapshot.room.maxPlayers;
+  ui.playersLabel.textContent = `${connectedPlayers.length}/${maxPlayers}: ${rosterNames}`;
   ui.topActionSlot.classList.toggle("hidden", !showLobbyActions);
   ui.startTestButton.classList.add("hidden");
   ui.addBotButton.classList.toggle("hidden", !isDeathmatch);
@@ -1312,10 +1324,30 @@ function drawPlayer(player) {
   ctx.arc(0, 0, crownRadius * 1.08, 0, Math.PI * 2);
   ctx.fill();
 
-  ctx.fillStyle = alive ? player.color : "rgba(110, 110, 110, 0.5)";
+  const hatBase = alive ? player.color : "rgba(110, 110, 110, 0.5)";
+  const hatAccent = alive ? (player.color2 || player.color) : "rgba(150, 150, 150, 0.42)";
+  ctx.fillStyle = hatBase;
   ctx.beginPath();
   ctx.arc(0, 0, crownRadius, 0, Math.PI * 2);
   ctx.fill();
+
+  ctx.fillStyle = hatAccent;
+  ctx.beginPath();
+  ctx.ellipse(0, crownRadius * 0.05, crownRadius * 0.92, crownRadius * 0.22, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.strokeStyle = hatAccent;
+  ctx.lineWidth = Math.max(1, crownRadius * 0.14);
+  ctx.beginPath();
+  ctx.arc(0, 0, crownRadius * 0.73, Math.PI * 0.08, Math.PI * 0.92);
+  ctx.stroke();
+
+  ctx.fillStyle = "rgba(255, 248, 232, 0.55)";
+  for (let i = -2; i <= 2; i += 1) {
+    ctx.beginPath();
+    ctx.arc(i * crownRadius * 0.32, crownRadius * 0.05, crownRadius * 0.055, 0, Math.PI * 2);
+    ctx.fill();
+  }
 
   ctx.strokeStyle = "rgba(255, 248, 232, 0.28)";
   ctx.lineWidth = 1.2;

@@ -15,7 +15,6 @@ const CONFIG = {
   preRoundCountdownMs: 1_000,
   planningMs: 4_000,
   planningMaxWaitMs: 3_000,
-  brMaxPlayers: 50,
   brMapGridSize: 10,
   brKillTarget: 10,
   bulletRadius: 8,
@@ -32,6 +31,8 @@ const CONFIG = {
   buildingAngles: [0, 45, 90, 135],
   roomCodeLength: 4
 };
+
+const GLOBAL_BR_ROOM_CODE = "BR00";
 
 const MIME_TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -1264,10 +1265,16 @@ function sanitizeMapGridSize(rawValue) {
   return clamp(Math.round(parsed), 2, 10);
 }
 
+function sanitizeDynamicMapGridSize(rawValue) {
+  const parsed = Number(rawValue);
+  if (!Number.isFinite(parsed)) return 2;
+  return Math.max(2, Math.round(parsed));
+}
+
 function generateMap(mapGridSize) {
-  const gridSize = sanitizeMapGridSize(mapGridSize);
+  const gridSize = sanitizeDynamicMapGridSize(mapGridSize);
   const buildingTarget = Math.min(
-    400,
+    2000,
     Math.round(CONFIG.defaultBuildingCount * ((gridSize * gridSize) / 4))
   );
   const map = {
@@ -1417,12 +1424,18 @@ function deathmatchScores(room) {
 }
 
 function deathmatchPlayerCap(room) {
-  return isDeathmatchMode(room) ? CONFIG.brMaxPlayers : CONFIG.maxPlayers;
+  if (room?.mode === "br") return null;
+  return isDeathmatchMode(room) ? 50 : CONFIG.maxPlayers;
 }
 
 function desiredBrGridSize(room) {
-  const count = room?.match?.participantIds?.length || connectedPlayers(room).length || 1;
-  return clamp(Math.ceil(Math.sqrt(Math.max(count, 1))), 2, 10);
+  const connectedParticipantCount = room?.match?.participantIds
+    ? room.match.participantIds
+        .map((id) => room.players.get(id))
+        .filter((player) => player && player.connected && !player.disconnected).length
+    : 0;
+  const count = connectedParticipantCount || connectedPlayers(room).length || 1;
+  return Math.max(2, Math.ceil(Math.sqrt(Math.max(count, 1))));
 }
 
 function nextBrGridSize(room) {
@@ -1430,7 +1443,7 @@ function nextBrGridSize(room) {
   const current = room?.match?.arenaGridSize || room?.settings?.mapGridSize || desired;
   if (!room?.match) return desired;
   if (current === desired) return desired;
-  return clamp(current + Math.sign(desired - current), 2, 10);
+  return Math.max(2, current + Math.sign(desired - current));
 }
 
 function resetPlayerForRound(player, spawnPoint) {
@@ -2272,7 +2285,13 @@ function updateRoom(room) {
   }
 
   if (room.phase === "shooting" && room.phaseEndsAt && now >= room.phaseEndsAt) {
-    if (isDeathmatchMode(room)) {
+    if (room.mode === "br") {
+      if (nextBrGridSize(room) !== room.match.arenaGridSize) {
+        startBrRound(room);
+      } else {
+        startPlanning(room);
+      }
+    } else if (isDeathmatchMode(room)) {
       const target = room.settings.killTarget || 5;
       const scores = deathmatchScores(room);
       const top = Math.max(0, ...Object.values(scores));
@@ -2349,6 +2368,7 @@ function serializePlayerForViewer(room, viewer, target) {
     id: target.id,
     name: target.name,
     color: target.color,
+    color2: target.color2 || target.color,
     connected: target.connected,
     disconnected: target.disconnected,
     alive: inCurrentMatch ? !!target.roundAlive : false,
@@ -2398,6 +2418,7 @@ function buildState(player) {
       name: player.name,
       isHost: player.id === room.hostId,
       color: player.color,
+      color2: player.color2 || player.color,
       connected: player.connected,
       disconnected: player.disconnected,
       alive: !!player.roundAlive,
@@ -2511,10 +2532,9 @@ function serveFile(requestPath, response) {
 }
 
 function findAvailableBrRoom() {
-  for (const room of rooms.values()) {
-    if (room.mode === "br" && !room.private && room.players.size < CONFIG.brMaxPlayers) {
-      return room;
-    }
+  const globalRoom = rooms.get(GLOBAL_BR_ROOM_CODE);
+  if (globalRoom?.mode === "br") {
+    return globalRoom;
   }
   return null;
 }
@@ -2532,17 +2552,8 @@ async function handleJoin(request, response) {
   let room = null;
   let desiredCode = "";
   if (requestedMode === "br" && !isPractice && !wantsPrivateDeathmatch) {
-    desiredCode = sanitizeRoomCode(body.roomCode);
-    if (body.roomCode && desiredCode.length !== CONFIG.roomCodeLength) {
-      json(response, 400, { ok: false, error: "Room codes must be 4 characters." });
-      return;
-    }
-    if (!desiredCode && !createNewRoom) {
-      room = findAvailableBrRoom();
-      desiredCode = room ? room.code : "";
-    } else if (desiredCode) {
-      room = rooms.get(desiredCode) || null;
-    }
+    room = findAvailableBrRoom();
+    desiredCode = GLOBAL_BR_ROOM_CODE;
   } else if (requestedMode === "turn" && !createNewRoom) {
     desiredCode = sanitizeRoomCode(body.roomCode);
     if (body.roomCode && desiredCode.length !== CONFIG.roomCodeLength) {
@@ -2581,7 +2592,7 @@ async function handleJoin(request, response) {
         : requestedMapGridSize || CONFIG.defaultMapGridSize,
       fixedMapGridSize,
       lineOfSight: requestedLineOfSight,
-      killTarget: deathmatch ? (killTargetOverride || CONFIG.brKillTarget) : 0,
+      killTarget: deathmatch && room.mode !== "br" ? (killTargetOverride || CONFIG.brKillTarget) : 0,
       totalRounds: deathmatch ? null : totalRounds
     };
     if (room.mode === "br") {
@@ -2593,19 +2604,21 @@ async function handleJoin(request, response) {
   }
 
   const playerCap = deathmatchPlayerCap(room);
-  if (room.players.size >= playerCap) {
+  if (playerCap !== null && room.players.size >= playerCap) {
     json(response, 409, { ok: false, error: "Room is full." });
     return;
   }
 
   const serial = globalPlayerSerial++;
   const defaultColor = generateColor(serial);
+  const defaultColor2 = generateColor(serial + 1);
   const player = {
     id: `player-${serial}`,
     token: randomId(24),
     roomCode: room.code,
     name: requestedName || generateGuestName(room),
     color: sanitizeHatColor(body.hatColor, defaultColor),
+    color2: sanitizeHatColor(body.hatColor2, defaultColor2),
     connected: true,
     disconnected: false,
     lastSeenAt: nowMs(),
@@ -2637,7 +2650,8 @@ async function handleJoin(request, response) {
 
   const botCount = Number(body.bots) || 0;
   if (botCount > 0 && (isPractice || room.players.size === 1)) {
-    const slotsRemaining = Math.max(0, deathmatchPlayerCap(room) - room.players.size);
+    const cap = deathmatchPlayerCap(room);
+    const slotsRemaining = cap === null ? botCount : Math.max(0, cap - room.players.size);
     for (let i = 0; i < Math.min(botCount, slotsRemaining); i += 1) {
       addBotToRoom(room);
     }
@@ -2761,7 +2775,7 @@ async function handleLeave(request, response) {
 
 function addBotToRoom(room) {
   const cap = deathmatchPlayerCap(room);
-  if (room.players.size >= cap) return null;
+  if (cap !== null && room.players.size >= cap) return null;
   const serial = globalPlayerSerial++;
   const bot = {
     id: `bot-${serial}`,
@@ -2769,6 +2783,7 @@ function addBotToRoom(room) {
     roomCode: room.code,
     name: generateBotName(room, serial),
     color: generateColor(serial),
+    color2: generateColor(serial + 1),
     connected: true,
     disconnected: false,
     bot: true,
