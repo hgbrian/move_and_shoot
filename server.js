@@ -15,6 +15,7 @@ const CONFIG = {
   preRoundCountdownMs: 1_000,
   planningMs: 4_000,
   planningMaxWaitMs: 3_000,
+  brMaxPlayers: 1024,
   brMapGridSize: 10,
   brKillTarget: 10,
   bulletRadius: 8,
@@ -1284,8 +1285,15 @@ function generateMap(mapGridSize) {
     buildings: []
   };
 
+  addBuildingsToMap(map, buildingTarget);
+  return map;
+}
+
+function addBuildingsToMap(map, targetCount, options = {}) {
   const corridorPadding = 28;
-  for (let attempt = 0; attempt < 8000 && map.buildings.length < buildingTarget; attempt += 1) {
+  const avoidPlayers = options.avoidPlayers || [];
+  const inSpawnArea = options.inSpawnArea || (() => true);
+  for (let attempt = 0; attempt < 8000 && map.buildings.length < targetCount; attempt += 1) {
     const angleDeg =
       CONFIG.buildingAngles[Math.floor(Math.random() * CONFIG.buildingAngles.length)];
     const width = 120 + Math.random() * 260;
@@ -1301,6 +1309,10 @@ function generateMap(mapGridSize) {
       angleRad: (angleDeg * Math.PI) / 180
     };
 
+    if (!inSpawnArea(building)) {
+      continue;
+    }
+
     let blocked = false;
     for (const other of map.buildings) {
       if (rotatedRectanglesOverlap(building, other, corridorPadding)) {
@@ -1309,10 +1321,17 @@ function generateMap(mapGridSize) {
       }
     }
     if (!blocked) {
+      for (const player of avoidPlayers) {
+        if (pointBlockedByBuilding(player, CONFIG.playerRadius + 30, { ...map, buildings: [building] })) {
+          blocked = true;
+          break;
+        }
+      }
+    }
+    if (!blocked) {
       map.buildings.push(building);
     }
   }
-  return map;
 }
 
 function findSpawnPoints(map, count) {
@@ -1424,7 +1443,7 @@ function deathmatchScores(room) {
 }
 
 function deathmatchPlayerCap(room) {
-  if (room?.mode === "br") return null;
+  if (room?.mode === "br") return CONFIG.brMaxPlayers;
   return isDeathmatchMode(room) ? 50 : CONFIG.maxPlayers;
 }
 
@@ -1458,6 +1477,7 @@ function resetPlayerForRound(player, spawnPoint) {
   player.plan = createFreshPlan(player);
   player.planFinal = false;
   player.pendingBrSpawn = false;
+  player.skipRespawnTurn = null;
 }
 
 function beginLobbyCountdown(room) {
@@ -1675,6 +1695,63 @@ function startBrRound(room) {
   startPlanning(room);
 }
 
+function resizeBrArena(room, nextGridSize) {
+  if (!room.round?.map || !room.match || room.mode !== "br") {
+    return;
+  }
+
+  const map = room.round.map;
+  const oldWidth = map.width;
+  const oldHeight = map.height;
+  const oldBuildingCount = map.buildings.length;
+  map.id = `map-${globalMapSerial++}`;
+  map.width = CONFIG.screenSize * nextGridSize;
+  map.height = CONFIG.screenSize * nextGridSize;
+  room.settings.mapGridSize = nextGridSize;
+  room.match.arenaGridSize = nextGridSize;
+
+  if (map.width < oldWidth || map.height < oldHeight) {
+    map.buildings = map.buildings.filter((building) => (
+      building.x >= 0 &&
+      building.y >= 0 &&
+      building.x <= map.width &&
+      building.y <= map.height
+    ));
+  } else if (map.width > oldWidth || map.height > oldHeight) {
+    const targetCount = Math.min(
+      2000,
+      Math.round(CONFIG.defaultBuildingCount * ((nextGridSize * nextGridSize) / 4))
+    );
+    const alivePlayers = room.match.participantIds
+      .map((id) => room.players.get(id))
+      .filter((player) => player && player.roundAlive && !player.disconnected);
+    addBuildingsToMap(map, targetCount, {
+      avoidPlayers: alivePlayers,
+      inSpawnArea: (building) => (
+        building.x > oldWidth - building.halfWidth ||
+        building.y > oldHeight - building.halfHeight
+      )
+    });
+    if (map.buildings.length === oldBuildingCount) {
+      addBuildingsToMap(map, targetCount, { avoidPlayers: alivePlayers });
+    }
+  }
+
+  const elapsed = room.round.roundStartedAt ? nowMs() - room.round.roundStartedAt : 0;
+  for (const playerId of room.match.participantIds) {
+    const player = room.players.get(playerId);
+    if (!player || !player.roundAlive || player.disconnected) continue;
+    if (!insideWorld(player, CONFIG.playerRadius, map) || pointBlockedByBuilding(player, CONFIG.playerRadius, map)) {
+      player.roundAlive = false;
+      player.spectating = true;
+      player.roundDeathAtMs = elapsed;
+      player.skipRespawnTurn = (room.round.turnNumber || 0) + 1;
+    }
+  }
+  delete map._nav;
+  getNavGrid(map);
+}
+
 function finalizeBrMatch(room) {
   if (isTeamMode(room)) {
     const teamKills = room.match.teamKills || { red: 0, blue: 0 };
@@ -1818,7 +1895,13 @@ function startPlanning(room) {
     if (!player) {
       continue;
     }
-    if (isDeathmatchMode(room) && !player.roundAlive && room.round.map && !player.disconnected) {
+    if (
+      isDeathmatchMode(room) &&
+      !player.roundAlive &&
+      room.round.map &&
+      !player.disconnected &&
+      player.skipRespawnTurn !== room.round.turnNumber
+    ) {
       resetPlayerForRound(player, pickBrSpawn(room.round.map, room, player.id));
     }
     player.plan = createFreshPlan(player);
@@ -2286,11 +2369,11 @@ function updateRoom(room) {
 
   if (room.phase === "shooting" && room.phaseEndsAt && now >= room.phaseEndsAt) {
     if (room.mode === "br") {
-      if (nextBrGridSize(room) !== room.match.arenaGridSize) {
-        startBrRound(room);
-      } else {
-        startPlanning(room);
+      const targetGridSize = nextBrGridSize(room);
+      if (targetGridSize !== room.match.arenaGridSize) {
+        resizeBrArena(room, targetGridSize);
       }
+      startPlanning(room);
     } else if (isDeathmatchMode(room)) {
       const target = room.settings.killTarget || 5;
       const scores = deathmatchScores(room);
@@ -2532,11 +2615,27 @@ function serveFile(requestPath, response) {
 }
 
 function findAvailableBrRoom() {
-  const globalRoom = rooms.get(GLOBAL_BR_ROOM_CODE);
-  if (globalRoom?.mode === "br") {
-    return globalRoom;
+  for (let index = 0; index < 100; index += 1) {
+    const code = `BR${String(index).padStart(2, "0")}`;
+    const room = rooms.get(code);
+    if (!room) {
+      return null;
+    }
+    if (room.mode === "br" && room.players.size < CONFIG.brMaxPlayers) {
+      return room;
+    }
   }
   return null;
+}
+
+function nextBrRoomCode() {
+  for (let index = 0; index < 100; index += 1) {
+    const code = `BR${String(index).padStart(2, "0")}`;
+    const room = rooms.get(code);
+    if (!room) return code;
+    if (room.mode === "br" && room.players.size < CONFIG.brMaxPlayers) return code;
+  }
+  return generateRoomCode();
 }
 
 async function handleJoin(request, response) {
@@ -2553,7 +2652,7 @@ async function handleJoin(request, response) {
   let desiredCode = "";
   if (requestedMode === "br" && !isPractice && !wantsPrivateDeathmatch) {
     room = findAvailableBrRoom();
-    desiredCode = GLOBAL_BR_ROOM_CODE;
+    desiredCode = room ? room.code : nextBrRoomCode();
   } else if (requestedMode === "turn" && !createNewRoom) {
     desiredCode = sanitizeRoomCode(body.roomCode);
     if (body.roomCode && desiredCode.length !== CONFIG.roomCodeLength) {
