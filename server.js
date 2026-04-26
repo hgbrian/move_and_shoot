@@ -2614,28 +2614,62 @@ function serveFile(requestPath, response) {
   });
 }
 
-function findAvailableBrRoom() {
+function findAvailableBrRoom(fillBots = false) {
   for (let index = 0; index < 100; index += 1) {
-    const code = `BR${String(index).padStart(2, "0")}`;
+    const code = brRoomCode(index, fillBots);
     const room = rooms.get(code);
     if (!room) {
       return null;
     }
-    if (room.mode === "br" && room.players.size < CONFIG.brMaxPlayers) {
+    if (room.mode !== "br" || room.settings?.fillBots !== fillBots) {
+      continue;
+    }
+    if (room.players.size < CONFIG.brMaxPlayers || (fillBots && lowestRankingBot(room))) {
       return room;
     }
   }
   return null;
 }
 
-function nextBrRoomCode() {
+function brRoomCode(index, fillBots = false) {
+  return `${fillBots ? "BB" : "BR"}${String(index).padStart(2, "0")}`;
+}
+
+function nextBrRoomCode(fillBots = false) {
   for (let index = 0; index < 100; index += 1) {
-    const code = `BR${String(index).padStart(2, "0")}`;
+    const code = brRoomCode(index, fillBots);
     const room = rooms.get(code);
     if (!room) return code;
-    if (room.mode === "br" && room.players.size < CONFIG.brMaxPlayers) return code;
+    if (room.mode === "br" && room.settings?.fillBots === fillBots && room.players.size < CONFIG.brMaxPlayers) return code;
   }
   return generateRoomCode();
+}
+
+function lowestRankingBot(room) {
+  const kills = room.match?.kills || {};
+  return Array.from(room.players.values())
+    .filter((player) => player.bot)
+    .sort((a, b) => (kills[a.id] || 0) - (kills[b.id] || 0) || a.name.localeCompare(b.name))[0] || null;
+}
+
+function removePlayerFromRoom(room, player) {
+  if (!room || !player) return;
+  sessions.delete(player.token);
+  room.players.delete(player.id);
+  if (room.match) {
+    room.match.participantIds = room.match.participantIds.filter((id) => id !== player.id);
+    delete room.match.roundWins[player.id];
+    delete room.match.totalSurvivalMs[player.id];
+    delete room.match.kills[player.id];
+  }
+}
+
+function fillBrRoomWithBots(room) {
+  if (!room || room.mode !== "br" || !room.settings?.fillBots) return;
+  while (room.players.size < CONFIG.brMaxPlayers) {
+    const bot = addBotToRoom(room);
+    if (!bot) break;
+  }
 }
 
 async function handleJoin(request, response) {
@@ -2646,13 +2680,17 @@ async function handleJoin(request, response) {
   const isPractice = !!body.practice;
   const wantsPrivateDeathmatch = requestedMode !== "turn" && body.private === true;
   const createNewRoom = !!body.createNew;
+  const fillBots = requestedMode === "br" && body.fillBots === true;
   const requestedLineOfSight = body.lineOfSight === true;
 
   let room = null;
   let desiredCode = "";
   if (requestedMode === "br" && !isPractice && !wantsPrivateDeathmatch) {
-    room = findAvailableBrRoom();
-    desiredCode = room ? room.code : nextBrRoomCode();
+    room = findAvailableBrRoom(fillBots);
+    if (room && fillBots && room.players.size >= CONFIG.brMaxPlayers) {
+      removePlayerFromRoom(room, lowestRankingBot(room));
+    }
+    desiredCode = room ? room.code : nextBrRoomCode(fillBots);
   } else if (requestedMode === "turn" && !createNewRoom) {
     desiredCode = sanitizeRoomCode(body.roomCode);
     if (body.roomCode && desiredCode.length !== CONFIG.roomCodeLength) {
@@ -2690,6 +2728,7 @@ async function handleJoin(request, response) {
         ? (room.mode === "br" ? desiredBrGridSize(room) : (fixedMapGridSize || CONFIG.defaultMapGridSize))
         : requestedMapGridSize || CONFIG.defaultMapGridSize,
       fixedMapGridSize,
+      fillBots,
       lineOfSight: requestedLineOfSight,
       killTarget: deathmatch && room.mode !== "br" ? (killTargetOverride || CONFIG.brKillTarget) : 0,
       totalRounds: deathmatch ? null : totalRounds
@@ -2703,6 +2742,11 @@ async function handleJoin(request, response) {
   }
 
   const playerCap = deathmatchPlayerCap(room);
+  if (playerCap !== null && room.players.size >= playerCap) {
+    if (room.mode === "br" && room.settings?.fillBots) {
+      removePlayerFromRoom(room, lowestRankingBot(room));
+    }
+  }
   if (playerCap !== null && room.players.size >= playerCap) {
     json(response, 409, { ok: false, error: "Room is full." });
     return;
@@ -2754,6 +2798,9 @@ async function handleJoin(request, response) {
     for (let i = 0; i < Math.min(botCount, slotsRemaining); i += 1) {
       addBotToRoom(room);
     }
+  }
+  if (room.mode === "br" && room.settings?.fillBots) {
+    fillBrRoomWithBots(room);
   }
 
   if (isPractice && room.mode === "br" && !room.match) {

@@ -30,6 +30,7 @@ const UI_ELEMENTS = {
   addBotButton: "add-bot-button",
   topActionSlot: "top-action-slot",
   createBrButton: "create-br-button",
+  createBrBotsButton: "create-br-bots-button",
   scoreTile: "score-tile",
   leaderboard: "leaderboard",
   leaderboardList: "leaderboard-list",
@@ -784,6 +785,9 @@ async function joinRoom(roomCode, options = {}) {
     payload.mode = selectedMode;
     payload.createNew = !!options.createNew;
     payload.private = selectedMode !== "br";
+    if (options.fillBots) {
+      payload.fillBots = true;
+    }
   }
   const requestedBots = !roomCode
     ? clamp(Math.floor(Number(ui.botCountInput.value) || 0), 0, 49)
@@ -2216,9 +2220,19 @@ function escapeHtml(s) {
 
 bind(ui.createBrButton, "click", async () => {
   sounds.unlock();
-  ui.menuMessage.textContent = "Joining battle royale...";
+  ui.menuMessage.textContent = "Joining human battle royale...";
   try {
     await joinRoom("", { mode: "br" });
+  } catch (error) {
+    ui.menuMessage.textContent = error.message;
+  }
+});
+
+bind(ui.createBrBotsButton, "click", async () => {
+  sounds.unlock();
+  ui.menuMessage.textContent = "Joining full bot battle royale...";
+  try {
+    await joinRoom("", { mode: "br", fillBots: true });
   } catch (error) {
     ui.menuMessage.textContent = error.message;
   }
