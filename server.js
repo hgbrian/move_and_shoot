@@ -19,6 +19,10 @@ const CONFIG = {
   brMinGridSize: 3,
   brAreaMultiplier: 1,
   brKillTarget: 10,
+  coinRoundMs: 180_000,
+  coinCount: 90,
+  coinRadius: 10,
+  coinDropRadius: 170,
   bulletRadius: 8,
   bulletMaxFlightMs: 5000,
   movementMs: 2_000,
@@ -1428,11 +1432,15 @@ function lineOfSightEnabled(room) {
 }
 
 function isDeathmatchMode(room) {
-  return room?.mode === "br" || room?.mode === "ffa" || room?.mode === "team";
+  return room?.mode === "br" || room?.mode === "ffa" || room?.mode === "team" || room?.mode === "coins";
 }
 
 function isTeamMode(room) {
-  return room?.mode === "team";
+  return room?.mode === "team" || room?.mode === "coins";
+}
+
+function isCoinMode(room) {
+  return room?.mode === "coins";
 }
 
 function teamName(team) {
@@ -1509,6 +1517,9 @@ function rebalanceTeamAssignments(room, candidates = null) {
 
 function deathmatchScores(room) {
   if (!room?.match) return {};
+  if (isCoinMode(room)) {
+    return room.match.teamCoins || { red: 0, blue: 0 };
+  }
   if (isTeamMode(room)) {
     return room.match.teamKills || { red: 0, blue: 0 };
   }
@@ -1518,6 +1529,13 @@ function deathmatchScores(room) {
 function deathmatchPlayerCap(room) {
   if (room?.mode === "br") return CONFIG.brMaxPlayers;
   return isDeathmatchMode(room) ? 50 : CONFIG.maxPlayers;
+}
+
+function displayedPlayerCap(room) {
+  if (room?.private && room.match && !["lobby", "lobby_countdown", "match_end"].includes(room.phase)) {
+    return room.match.participantIds.length;
+  }
+  return deathmatchPlayerCap(room);
 }
 
 function desiredBrGridSize(room) {
@@ -1575,6 +1593,92 @@ function pickRandomWalkableTarget(origin, map) {
   return { x: origin.x, y: origin.y };
 }
 
+function randomWalkablePoint(map) {
+  for (let attempt = 0; attempt < 500; attempt += 1) {
+    const point = {
+      x: CONFIG.playerRadius + Math.random() * (map.width - CONFIG.playerRadius * 2),
+      y: CONFIG.playerRadius + Math.random() * (map.height - CONFIG.playerRadius * 2)
+    };
+    if (!pointBlockedByBuilding(point, CONFIG.playerRadius, map)) {
+      return point;
+    }
+  }
+  return { x: CONFIG.playerRadius + 40, y: CONFIG.playerRadius + 40 };
+}
+
+function createCoin(map, point = null, value = 1) {
+  const p = point || randomWalkablePoint(map);
+  return {
+    id: `coin-${randomId(8)}`,
+    x: p.x,
+    y: p.y,
+    value
+  };
+}
+
+function scatterCoins(map, count) {
+  const coins = [];
+  for (let i = 0; i < count; i += 1) {
+    coins.push(createCoin(map));
+  }
+  return coins;
+}
+
+function scatterDroppedCoins(room, origin, amount) {
+  if (!room.round?.map || !Array.isArray(room.round.coins) || amount <= 0) return;
+  const map = room.round.map;
+  for (let i = 0; i < amount; i += 1) {
+    let point = null;
+    for (let attempt = 0; attempt < 60; attempt += 1) {
+      const angle = Math.random() * Math.PI * 2;
+      const dist = CONFIG.playerRadius + Math.random() * CONFIG.coinDropRadius;
+      const candidate = {
+        x: clamp(origin.x + Math.cos(angle) * dist, CONFIG.coinRadius, map.width - CONFIG.coinRadius),
+        y: clamp(origin.y + Math.sin(angle) * dist, CONFIG.coinRadius, map.height - CONFIG.coinRadius)
+      };
+      if (!pointBlockedByBuilding(candidate, CONFIG.coinRadius, map)) {
+        point = candidate;
+        break;
+      }
+    }
+    room.round.coins.push(createCoin(map, point || randomWalkablePoint(map)));
+  }
+}
+
+function recomputeTeamCoins(room) {
+  if (!room.match?.coinScores) return;
+  const teamCoins = { red: 0, blue: 0 };
+  for (const [playerId, coins] of Object.entries(room.match.coinScores)) {
+    const player = room.players.get(playerId);
+    if (!player?.team) continue;
+    teamCoins[player.team] = (teamCoins[player.team] || 0) + coins;
+  }
+  room.match.teamCoins = teamCoins;
+}
+
+function collectCoins(room) {
+  if (!isCoinMode(room) || !room.round?.coins?.length || !room.match?.coinScores) return;
+  const remaining = [];
+  for (const coin of room.round.coins) {
+    let collector = null;
+    for (const playerId of room.match.participantIds) {
+      const player = room.players.get(playerId);
+      if (!player || !player.roundAlive || player.disconnected) continue;
+      if (Math.hypot(player.x - coin.x, player.y - coin.y) <= CONFIG.playerRadius + CONFIG.coinRadius) {
+        collector = player;
+        break;
+      }
+    }
+    if (collector) {
+      room.match.coinScores[collector.id] = (room.match.coinScores[collector.id] || 0) + (coin.value || 1);
+    } else {
+      remaining.push(coin);
+    }
+  }
+  room.round.coins = remaining;
+  recomputeTeamCoins(room);
+}
+
 function pickClearAimDirection(origin, map) {
   let bestDir = { x: 0, y: -1 };
   let bestDist = 0;
@@ -1602,6 +1706,7 @@ function generateBotPlan(room, bot) {
 
   let aimDir;
   let moveTarget;
+  const coins = isCoinMode(room) ? (room.round.coins || []) : [];
 
   if (visible.length > 0) {
     const target = visible.reduce(
@@ -1616,6 +1721,24 @@ function generateBotPlan(room, bot) {
     const cos = Math.cos(wobble);
     const sin = Math.sin(wobble);
     aimDir = { x: dx * cos - dy * sin, y: dx * sin + dy * cos };
+
+    if (coins.length) {
+      const nearestCoin = coins.reduce(
+        (best, coin) => (distance(bot, coin) < distance(bot, best) ? coin : best),
+        coins[0]
+      );
+      const coinDx = nearestCoin.x - bot.x;
+      const coinDy = nearestCoin.y - bot.y;
+      const coinLen = Math.hypot(coinDx, coinDy) || 1;
+      moveTarget = {
+        x: clamp(bot.x + (coinDx / coinLen) * Math.min(coinLen, CONFIG.moveRange), CONFIG.playerRadius, map.width - CONFIG.playerRadius),
+        y: clamp(bot.y + (coinDy / coinLen) * Math.min(coinLen, CONFIG.moveRange), CONFIG.playerRadius, map.height - CONFIG.playerRadius)
+      };
+      if (pointBlockedByBuilding(moveTarget, CONFIG.playerRadius, map)) {
+        moveTarget = pickRandomWalkableTarget(bot, map);
+      }
+      return { moveTarget, aimDir };
+    }
 
     const idealRange = CONFIG.moveRange * 0.45;
     const gap = len - idealRange;
@@ -1636,6 +1759,24 @@ function generateBotPlan(room, bot) {
       moveTarget = pickRandomWalkableTarget(bot, map);
     }
   } else if (enemies.length > 0) {
+    if (coins.length) {
+      const nearestCoin = coins.reduce(
+        (best, coin) => (distance(bot, coin) < distance(bot, best) ? coin : best),
+        coins[0]
+      );
+      const dx = nearestCoin.x - bot.x;
+      const dy = nearestCoin.y - bot.y;
+      const len = Math.hypot(dx, dy) || 1;
+      moveTarget = {
+        x: clamp(bot.x + (dx / len) * Math.min(len, CONFIG.moveRange), CONFIG.playerRadius, map.width - CONFIG.playerRadius),
+        y: clamp(bot.y + (dy / len) * Math.min(len, CONFIG.moveRange), CONFIG.playerRadius, map.height - CONFIG.playerRadius)
+      };
+      if (pointBlockedByBuilding(moveTarget, CONFIG.playerRadius, map)) {
+        moveTarget = pickRandomWalkableTarget(bot, map);
+      }
+      aimDir = pickClearAimDirection(bot, map);
+      return { moveTarget, aimDir };
+    }
     const closest = enemies.reduce(
       (best, e) => (distance(bot, e) < distance(bot, best) ? e : best),
       enemies[0]
@@ -1713,6 +1854,9 @@ function addBrParticipant(room, player) {
   }
   room.match.kills[player.id] = 0;
   room.match.totalSurvivalMs[player.id] = 0;
+  if (room.match.coinScores) {
+    room.match.coinScores[player.id] = 0;
+  }
   ensurePlayerTeam(room, player);
   rebalanceTeamAssignments(room, room.match.participantIds.map((id) => room.players.get(id)).filter(Boolean));
   player.roundAlive = false;
@@ -1729,6 +1873,8 @@ function startBrMatch(room) {
     roundWins: Object.fromEntries(participants.map((p) => [p.id, 0])),
     totalSurvivalMs: Object.fromEntries(participants.map((p) => [p.id, 0])),
     kills: Object.fromEntries(participants.map((p) => [p.id, 0])),
+    coinScores: isCoinMode(room) ? Object.fromEntries(participants.map((p) => [p.id, 0])) : null,
+    teamCoins: isCoinMode(room) ? { red: 0, blue: 0 } : null,
     teamKills: isTeamMode(room) ? { red: 0, blue: 0 } : null,
     arenaGridSize: desiredBrGridSize(room),
     currentRoundNumber: 0
@@ -1757,7 +1903,8 @@ function startBrRound(room) {
     turnNumber: 0,
     roundStartedAt: null,
     planningVisibility: {},
-    currentTurn: null
+    currentTurn: null,
+    coins: isCoinMode(room) ? scatterCoins(map, CONFIG.coinCount) : []
   };
   for (const playerId of participantIds) {
     const player = room.players.get(playerId);
@@ -1823,6 +1970,31 @@ function resizeBrArena(room, nextGridSize) {
 }
 
 function finalizeBrMatch(room) {
+  if (isCoinMode(room)) {
+    recomputeTeamCoins(room);
+    const teamCoins = room.match.teamCoins || { red: 0, blue: 0 };
+    const redScore = teamCoins.red || 0;
+    const blueScore = teamCoins.blue || 0;
+    const winnerTeam = redScore === blueScore ? null : (redScore > blueScore ? "red" : "blue");
+    const coinScores = room.match.coinScores || {};
+    room.lastMatchSummary = {
+      winnerTeam,
+      scoreboard: room.match.participantIds
+        .map((id) => {
+          const p = room.players.get(id);
+          return {
+            id,
+            name: p ? p.name : "?",
+            team: p ? p.team || null : null,
+            coins: coinScores[id] || 0
+          };
+        })
+        .sort((a, b) => b.coins - a.coins || a.name.localeCompare(b.name))
+    };
+    room.round = null;
+    setPhase(room, "match_end", 5_000, "Coin grab over");
+    return;
+  }
   if (isTeamMode(room)) {
     const teamKills = room.match.teamKills || { red: 0, blue: 0 };
     const redScore = teamKills.red || 0;
@@ -1991,7 +2163,8 @@ function startPlanning(room) {
     room.round.planningVisibility[player.id] = visibleEnemiesForPlayer(room, player.id);
   }
 
-  setPhase(room, "planning", CONFIG.planningMs, `Turn ${room.round.turnNumber}`);
+  const label = isCoinMode(room) ? "Grab coins" : `Turn ${room.round.turnNumber}`;
+  setPhase(room, "planning", CONFIG.planningMs, label);
 }
 
 function normalizedMoveTarget(player, moveTarget) {
@@ -2201,6 +2374,14 @@ function simulateShooting(room, actionMap) {
       player.roundAlive = false;
       player.spectating = true;
       player.roundDeathAtMs = elapsedBeforeShots + s.deathAtMs;
+      if (isCoinMode(room) && room.match?.coinScores) {
+        const carried = room.match.coinScores[player.id] || 0;
+        if (carried > 0) {
+          room.match.coinScores[player.id] = 0;
+          scatterDroppedCoins(room, s.pos, carried);
+          recomputeTeamCoins(room);
+        }
+      }
       if (killRecord && killRecord.shooterId !== player.id) {
         kills.push({
           shooterId: killRecord.shooterId,
@@ -2268,6 +2449,7 @@ function beginMovement(room) {
 }
 
 function beginShooting(room) {
+  collectCoins(room);
   const actionMap = room.round.currentTurn.movement?.actionMap || buildActionMap(room);
   const result = simulateShooting(room, actionMap);
   room.round.currentTurn.shooting = {
@@ -2436,6 +2618,13 @@ function updateRoom(room) {
         resizeBrArena(room, targetGridSize);
       }
       startPlanning(room);
+    } else if (isCoinMode(room)) {
+      const elapsed = room.round?.roundStartedAt ? now - room.round.roundStartedAt : 0;
+      if (elapsed >= CONFIG.coinRoundMs) {
+        finalizeBrMatch(room);
+      } else {
+        startPlanning(room);
+      }
     } else if (isDeathmatchMode(room)) {
       const target = room.settings.killTarget || 5;
       const scores = deathmatchScores(room);
@@ -2543,6 +2732,8 @@ function buildState(player) {
       movementMs: CONFIG.movementMs,
       bulletSpeed: CONFIG.bulletSpeed,
       bulletRadius: CONFIG.bulletRadius,
+      coinRadius: CONFIG.coinRadius,
+      coinRoundMs: CONFIG.coinRoundMs,
       screenSize: CONFIG.screenSize
     },
     room: {
@@ -2556,7 +2747,7 @@ function buildState(player) {
       connectedCount: connectedPlayers(room).length,
       playerCount: players.length,
       minPlayers: isDeathmatchMode(room) ? 1 : (room.testMode ? 1 : CONFIG.minPlayers),
-      maxPlayers: deathmatchPlayerCap(room)
+      maxPlayers: displayedPlayerCap(room)
     },
     you: {
       id: player.id,
@@ -2590,16 +2781,20 @@ function buildState(player) {
           mode: room.mode,
           currentRound: room.match.currentRoundNumber,
           totalRounds: isDeathmatchMode(room) ? null : (room.settings.totalRounds || CONFIG.totalRounds),
+          roundStartedAt: room.round?.roundStartedAt || null,
           turnNumber: room.round ? room.round.turnNumber : 0,
           participantIds: room.match.participantIds,
           kills: room.match.kills || null,
           teamKills: room.match.teamKills || null,
+          coinScores: room.match.coinScores || null,
+          teamCoins: room.match.teamCoins || null,
           map: room.round
             ? {
                 id: room.round.map.id,
                 width: room.round.map.width,
                 height: room.round.map.height,
-                buildings: room.round.map.buildings.map(serializeBuilding)
+                buildings: room.round.map.buildings.map(serializeBuilding),
+                coins: room.round.coins || []
               }
             : null,
           movement: room.round?.currentTurn?.movement || null,
@@ -2723,6 +2918,8 @@ function removePlayerFromRoom(room, player) {
     delete room.match.roundWins[player.id];
     delete room.match.totalSurvivalMs[player.id];
     delete room.match.kills[player.id];
+    if (room.match.coinScores) delete room.match.coinScores[player.id];
+    recomputeTeamCoins(room);
   }
   rebalanceTeamAssignments(room, room.match
     ? room.match.participantIds.map((id) => room.players.get(id)).filter(Boolean)
@@ -2740,7 +2937,7 @@ function fillBrRoomWithBots(room) {
 
 async function handleJoin(request, response) {
   const body = await readJsonBody(request);
-  const requestedMode = ["turn", "br", "ffa", "team"].includes(body.mode) ? body.mode : "turn";
+  const requestedMode = ["turn", "br", "ffa", "team", "coins"].includes(body.mode) ? body.mode : "turn";
   const requestedName = sanitizePlayerName(body.name);
   const requestedMapGridSize = sanitizeMapGridSize(body.mapGridSize);
   const isPractice = !!body.practice;
@@ -2796,7 +2993,7 @@ async function handleJoin(request, response) {
       fixedMapGridSize,
       fillBots,
       lineOfSight: requestedLineOfSight,
-      killTarget: deathmatch && room.mode !== "br" ? (killTargetOverride || CONFIG.brKillTarget) : 0,
+      killTarget: deathmatch && room.mode !== "br" && room.mode !== "coins" ? (killTargetOverride || CONFIG.brKillTarget) : 0,
       totalRounds: deathmatch ? null : totalRounds
     };
     if (room.mode === "br") {

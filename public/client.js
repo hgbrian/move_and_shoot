@@ -242,11 +242,15 @@ function ordinal(n) {
 }
 
 function isDeathmatchMode(mode) {
-  return mode === "br" || mode === "ffa" || mode === "team";
+  return mode === "br" || mode === "ffa" || mode === "team" || mode === "coins";
 }
 
 function isTeamMode(mode) {
-  return mode === "team";
+  return mode === "team" || mode === "coins";
+}
+
+function isCoinMode(mode) {
+  return mode === "coins";
 }
 
 function teamLabel(team) {
@@ -801,11 +805,11 @@ async function joinRoom(roomCode, options = {}) {
   const firstTo = Number(ui.totalRoundsInput.value) || 5;
   if (requestedBots > 0) {
     payload.bots = requestedBots;
-    if (selectedMode !== "br") {
+    if (selectedMode !== "br" && selectedMode !== "coins") {
       payload.killTarget = firstTo;
     }
   }
-  if (!roomCode && selectedMode !== "br") {
+  if (!roomCode && selectedMode !== "br" && selectedMode !== "coins") {
     payload.killTarget = firstTo;
   }
   const result = await api("/api/join", { method: "POST", body: payload });
@@ -987,17 +991,25 @@ function renderHud() {
     return;
   }
   const isBr = state.snapshot.room.mode === "br";
+  const isCoins = isCoinMode(state.snapshot.room.mode);
   ui.roomCodeLabel.textContent = isBr ? "Battle Royale" : state.snapshot.room.code;
   ui.phaseLabel.textContent = state.snapshot.room.phaseLabel;
-  ui.timerLabel.textContent = state.snapshot.room.phase === "planning"
+  const coinRemaining = state.snapshot.match?.roundStartedAt
+    ? Math.max(0, state.snapshot.match.roundStartedAt + (state.snapshot.config.coinRoundMs || 180000) - state.snapshot.serverNow)
+    : null;
+  ui.timerLabel.textContent = isCoins && coinRemaining !== null
+    ? formatSeconds(coinRemaining)
+    : state.snapshot.room.phase === "planning"
     ? formatSeconds(getPhaseTimeRemaining())
     : "—";
   const isDeathmatch = isDeathmatchMode(state.snapshot.room.mode);
   const isTeam = isTeamMode(state.snapshot.room.mode);
-  ui.roundLabelTitle.textContent = isBr ? "Mode" : (isDeathmatch ? "Target" : "Round");
+  ui.roundLabelTitle.textContent = isBr ? "Mode" : (isCoins ? "Mode" : (isDeathmatch ? "Target" : "Round"));
   ui.roundLabel.textContent = state.snapshot.match.active
     ? isBr
       ? "Endless"
+      : isCoins
+      ? "Coin Runners"
       : isDeathmatch
       ? `First to ${state.snapshot.room.settings.killTarget || 5}`
       : state.snapshot.match.totalRounds
@@ -1014,7 +1026,12 @@ function renderHud() {
       : "Spectating";
   const leaderWins = Math.max(0, ...state.snapshot.players.map((player) => player.wins || 0));
   const showLobbyActions = state.snapshot.you.isHost && state.snapshot.room.phase === "lobby";
-  if (isTeam) {
+  if (isCoins) {
+    const teamCoins = state.snapshot.match?.teamCoins || {};
+    const red = teamCoins.red ?? 0;
+    const blue = teamCoins.blue ?? 0;
+    ui.scoreLabel.textContent = `Red ${red} coins · Blue ${blue} coins`;
+  } else if (isTeam) {
     const teamKills = state.snapshot.match?.teamKills || {};
     const red = teamKills.red ?? 0;
     const blue = teamKills.blue ?? 0;
@@ -1088,6 +1105,29 @@ function drawBuildings(map) {
     ctx.strokeStyle = "rgba(255,255,255,0.22)";
     ctx.lineWidth = 2 / state.camera.zoom;
     ctx.strokeRect(-building.width / 2, -building.height / 2, building.width, building.height);
+    ctx.restore();
+  }
+}
+
+function drawCoins(map) {
+  const coins = map.coins || [];
+  if (!coins.length) return;
+  const radius = (state.snapshot.config.coinRadius || 10) * state.camera.zoom;
+  for (const coin of coins) {
+    const screen = worldToScreen(coin);
+    ctx.save();
+    ctx.translate(screen.x, screen.y);
+    ctx.fillStyle = "#f6c945";
+    ctx.strokeStyle = "rgba(91, 58, 12, 0.75)";
+    ctx.lineWidth = Math.max(1, radius * 0.18);
+    ctx.beginPath();
+    ctx.arc(0, 0, radius, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = "rgba(255, 250, 207, 0.85)";
+    ctx.beginPath();
+    ctx.arc(-radius * 0.28, -radius * 0.28, radius * 0.24, 0, Math.PI * 2);
+    ctx.fill();
     ctx.restore();
   }
 }
@@ -1531,6 +1571,7 @@ function render() {
   ctx.clip();
   drawBackground(state.snapshot.match.map, viewport);
   drawBuildings(state.snapshot.match.map);
+  drawCoins(state.snapshot.match.map);
   drawMoveAndAimPreview();
   drawBullets();
   drawPlayers();
@@ -2190,16 +2231,20 @@ function renderLeaderboard() {
   if (!open || !state.snapshot) return;
   const isDeathmatch = isDeathmatchMode(state.snapshot.room.mode);
   const isTeam = isTeamMode(state.snapshot.room.mode);
+  const isCoins = isCoinMode(state.snapshot.room.mode);
   const players = state.snapshot.players || [];
   const rows = players.map((p) => ({
     id: p.id,
     name: p.name,
-    score: isDeathmatch ? (state.snapshot.match.kills?.[p.id] ?? 0) : (p.wins || 0),
+    score: isCoins ? (state.snapshot.match.coinScores?.[p.id] ?? 0) : (isDeathmatch ? (state.snapshot.match.kills?.[p.id] ?? 0) : (p.wins || 0)),
     alive: p.alive,
     connected: p.connected,
     team: p.team || null
   }));
-  if (isTeam) {
+  if (isCoins) {
+    const teamScore = (team) => (state.snapshot.match.teamCoins?.[team] ?? 0);
+    rows.sort((a, b) => teamScore(b.team) - teamScore(a.team) || b.score - a.score || a.name.localeCompare(b.name));
+  } else if (isTeam) {
     const teamScore = (team) => (state.snapshot.match.teamKills?.[team] ?? 0);
     rows.sort((a, b) => teamScore(b.team) - teamScore(a.team) || b.score - a.score || a.name.localeCompare(b.name));
   } else {
@@ -2210,7 +2255,7 @@ function renderLeaderboard() {
     .map((r) => {
       const cls = r.id === myId ? "you" : "";
       const dim = !r.connected || (isDeathmatch && !r.alive) ? " style=\"opacity:0.5\"" : "";
-      const suffix = isDeathmatch ? "K" : "W";
+      const suffix = isCoins ? " coins" : (isDeathmatch ? "K" : "W");
       const teamBadge = isTeam && r.team
         ? `<span class="team-badge team-${r.team}">${escapeHtml(teamLabel(r.team))}</span>`
         : "";
