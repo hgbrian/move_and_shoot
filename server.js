@@ -15,8 +15,9 @@ const CONFIG = {
   preRoundCountdownMs: 1_000,
   planningMs: 4_000,
   planningMaxWaitMs: 3_000,
-  brMaxPlayers: 1024,
-  brMapGridSize: 10,
+  brMaxPlayers: 128,
+  brMinGridSize: 7,
+  brAreaMultiplier: 10,
   brKillTarget: 10,
   bulletRadius: 8,
   bulletMaxFlightMs: 5000,
@@ -1454,7 +1455,10 @@ function desiredBrGridSize(room) {
         .filter((player) => player && player.connected && !player.disconnected).length
     : 0;
   const count = connectedParticipantCount || connectedPlayers(room).length || 1;
-  return Math.max(2, Math.ceil(Math.sqrt(Math.max(count, 1))));
+  return Math.max(
+    CONFIG.brMinGridSize,
+    Math.ceil(Math.sqrt(Math.max(count, 1) * CONFIG.brAreaMultiplier))
+  );
 }
 
 function nextBrGridSize(room) {
@@ -1669,7 +1673,7 @@ function startBrRound(room) {
   room.match.currentRoundNumber += 1;
   const fixedSize = room.settings.fixedMapGridSize || null;
   const gridSize = room.mode === "br"
-    ? nextBrGridSize(room)
+    ? (room.round ? nextBrGridSize(room) : desiredBrGridSize(room))
     : (fixedSize || desiredBrGridSize(room));
   room.settings.mapGridSize = gridSize;
   if (room.match) {
@@ -2787,7 +2791,8 @@ async function handleJoin(request, response) {
     playerId: player.id
   });
 
-  if (isDeathmatchMode(room) && (!room.private || room.match)) {
+  const delayBrStartForBotFill = room.mode === "br" && room.settings?.fillBots && !room.match;
+  if (isDeathmatchMode(room) && (!room.private || room.match) && !delayBrStartForBotFill) {
     addBrParticipant(room, player);
   }
 
@@ -2801,6 +2806,9 @@ async function handleJoin(request, response) {
   }
   if (room.mode === "br" && room.settings?.fillBots) {
     fillBrRoomWithBots(room);
+  }
+  if (delayBrStartForBotFill) {
+    startBrMatch(room);
   }
 
   if (isPractice && room.mode === "br" && !room.match) {
@@ -2928,8 +2936,8 @@ function addBotToRoom(room) {
     token: `bot-token-${serial}`,
     roomCode: room.code,
     name: generateBotName(room, serial),
-    color: generateColor(serial),
-    color2: generateColor(serial + 1),
+    color: "#111111",
+    color2: "#111111",
     connected: true,
     disconnected: false,
     bot: true,

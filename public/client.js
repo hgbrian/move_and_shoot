@@ -1588,20 +1588,19 @@ function checkKillNotices() {
   const shotGroups = new Map();
   for (const kill of myKills) {
     if (elapsed < kill.timeMs) continue;
-    const key =
+    const shotKey =
       kill.bulletId ||
       `${state.snapshot.match.currentRound}-${state.snapshot.match.turnNumber}-${kill.victimId}`;
-    if (state.seenKillNoticeKeys.has(key)) continue;
-    state.seenKillNoticeKeys.add(key);
     const victim = state.snapshot.players.find((player) => player.id === kill.victimId);
-    const shotKey = kill.bulletId || key;
     if (!shotGroups.has(shotKey)) {
       shotGroups.set(shotKey, []);
     }
     shotGroups.get(shotKey).push(victim ? victim.name : "Unknown");
   }
 
-  for (const victims of shotGroups.values()) {
+  for (const [shotKey, victims] of shotGroups.entries()) {
+    if (state.seenKillNoticeKeys.has(shotKey)) continue;
+    state.seenKillNoticeKeys.add(shotKey);
     if (victims.length === 1) {
       const text = KILL_FLAVOR[Math.floor(Math.random() * KILL_FLAVOR.length)](victims[0]);
       pushMessage(`${text}.`);
