@@ -1443,6 +1443,10 @@ function teamColor(team) {
   return team === "blue" ? "#3a86ff" : "#ff6f61";
 }
 
+function displayHatColor(room, player) {
+  return isTeamMode(room) && player.team ? teamColor(player.team) : player.color;
+}
+
 function assignTeam(room, player) {
   if (!isTeamMode(room)) {
     player.team = null;
@@ -1467,6 +1471,39 @@ function ensurePlayerTeam(room, player) {
     }
   } else {
     player.team = null;
+  }
+}
+
+function rebalanceTeamAssignments(room, candidates = null) {
+  if (!isTeamMode(room)) {
+    for (const player of room.players.values()) {
+      player.team = null;
+    }
+    return;
+  }
+
+  const players = (candidates || connectedPlayers(room)).filter((player) => (
+    player && !player.disconnected
+  ));
+  const teams = {
+    red: players.filter((player) => player.team === "red"),
+    blue: players.filter((player) => player.team === "blue")
+  };
+
+  for (const player of players) {
+    if (player.team === "red" || player.team === "blue") continue;
+    const team = teams.red.length <= teams.blue.length ? "red" : "blue";
+    player.team = team;
+    teams[team].push(player);
+  }
+
+  while (Math.abs(teams.red.length - teams.blue.length) > 1) {
+    const from = teams.red.length > teams.blue.length ? "red" : "blue";
+    const to = from === "red" ? "blue" : "red";
+    const player = teams[from].pop();
+    if (!player) break;
+    player.team = to;
+    teams[to].push(player);
   }
 }
 
@@ -1677,6 +1714,7 @@ function addBrParticipant(room, player) {
   room.match.kills[player.id] = 0;
   room.match.totalSurvivalMs[player.id] = 0;
   ensurePlayerTeam(room, player);
+  rebalanceTeamAssignments(room, room.match.participantIds.map((id) => room.players.get(id)).filter(Boolean));
   player.roundAlive = false;
   player.spectating = true;
   player.pendingBrSpawn = true;
@@ -1684,11 +1722,7 @@ function addBrParticipant(room, player) {
 
 function startBrMatch(room) {
   const participants = connectedPlayers(room);
-  if (isTeamMode(room)) {
-    for (const player of participants) {
-      ensurePlayerTeam(room, player);
-    }
-  }
+  rebalanceTeamAssignments(room, participants);
   room.match = {
     id: `match-dm-${globalMatchSerial++}`,
     participantIds: participants.map((p) => p.id),
@@ -2039,7 +2073,7 @@ function simulateShooting(room, actionMap) {
     sim[player.id] = {
       id: player.id,
       pos: { x: player.x, y: player.y },
-      color: player.color,
+      color: displayHatColor(room, player),
       aimDir: action ? action.aimDir : (player.lastAimDir || { x: 0, y: -1 }),
       alive: !!player.roundAlive && !player.disconnected,
       willShoot: !!action && !!player.roundAlive && !player.disconnected,
@@ -2073,7 +2107,6 @@ function simulateShooting(room, actionMap) {
       const segmentHits = [];
       for (const target of players) {
         if (hitVictims.has(target.id)) continue;
-        if (isTeamMode(room) && shooter.team && target.team && shooter.team === target.team) continue;
         const t = sim[target.id];
         if (!t.alive) continue;
         if (t.deathAtMs !== null && t.deathAtMs <= segStartTimeMs) continue;
@@ -2479,7 +2512,7 @@ function serializePlayerForViewer(room, viewer, target) {
   return {
     id: target.id,
     name: target.name,
-    color: target.color,
+    color: displayHatColor(room, target),
     color2: target.color2 || target.color,
     connected: target.connected,
     disconnected: target.disconnected,
@@ -2529,7 +2562,7 @@ function buildState(player) {
       id: player.id,
       name: player.name,
       isHost: player.id === room.hostId,
-      color: player.color,
+      color: displayHatColor(room, player),
       color2: player.color2 || player.color,
       connected: player.connected,
       disconnected: player.disconnected,
@@ -2691,6 +2724,9 @@ function removePlayerFromRoom(room, player) {
     delete room.match.totalSurvivalMs[player.id];
     delete room.match.kills[player.id];
   }
+  rebalanceTeamAssignments(room, room.match
+    ? room.match.participantIds.map((id) => room.players.get(id)).filter(Boolean)
+    : null);
 }
 
 function fillBrRoomWithBots(room) {
@@ -2812,6 +2848,7 @@ async function handleJoin(request, response) {
   };
 
   room.players.set(player.id, player);
+  rebalanceTeamAssignments(room);
   sessions.set(player.token, {
     roomCode: room.code,
     playerId: player.id
@@ -2829,6 +2866,7 @@ async function handleJoin(request, response) {
     for (let i = 0; i < Math.min(botCount, slotsRemaining); i += 1) {
       addBotToRoom(room);
     }
+    rebalanceTeamAssignments(room);
   }
   if (room.mode === "br" && room.settings?.fillBots) {
     fillBrRoomWithBots(room);

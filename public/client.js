@@ -1018,7 +1018,7 @@ function renderHud() {
     const teamKills = state.snapshot.match?.teamKills || {};
     const red = teamKills.red ?? 0;
     const blue = teamKills.blue ?? 0;
-    ui.scoreLabel.textContent = `${red}R · ${blue}B`;
+    ui.scoreLabel.textContent = `Red ${red} · Blue ${blue}`;
   } else if (isDeathmatch) {
     const kills = state.snapshot.match?.kills || {};
     const myKills = kills[state.snapshot.you.id] ?? 0;
