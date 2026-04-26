@@ -1487,6 +1487,23 @@ function drawDeathBurst(player) {
     ctx.arc(screen.x, screen.y, baseRadius * 1.5, 0, Math.PI * 2);
     ctx.fill();
   }
+
+  const killer = entry.killerId ? byId(entry.killerId) : null;
+  if (killer) {
+    const label = killer.id === player.id ? "Self destruct" : `Killed by ${killer.name}`;
+    const x = screen.x + baseRadius * 1.4;
+    const y = screen.y - baseRadius * 1.2 - ease * baseRadius * 0.8;
+    ctx.font = "700 12px Trebuchet MS";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    const width = ctx.measureText(label).width;
+    ctx.fillStyle = `rgba(32, 23, 15, ${alpha * 0.72})`;
+    ctx.beginPath();
+    ctx.roundRect(x - 7, y - 12, width + 14, 24, 9);
+    ctx.fill();
+    ctx.fillStyle = `rgba(255, 246, 225, ${alpha})`;
+    ctx.fillText(label, x, y);
+  }
 }
 
 function drawSpectatorHint() {
