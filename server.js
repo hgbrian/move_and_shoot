@@ -1226,6 +1226,23 @@ function generateColor(serial) {
   return palette[(serial - 1) % palette.length];
 }
 
+function sanitizeHatColor(rawColor, fallback) {
+  const value = String(rawColor || "").trim();
+  return /^#[0-9a-fA-F]{6}$/.test(value) ? value.toLowerCase() : fallback;
+}
+
+function generateBotName(room, serial) {
+  const suffixes = ["io", "ness", "lik", "bert", "ley", "ster", "max", "tron", "wick", "son", "zo", "bit"];
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const suffix = suffixes[Math.floor(Math.random() * suffixes.length)];
+    const name = `Bot${suffix}`;
+    if (!Array.from(room.players.values()).some((player) => player.name === name)) {
+      return name;
+    }
+  }
+  return `Bot${suffixes[serial % suffixes.length]} ${serial}`;
+}
+
 function sanitizeRoomCode(rawCode) {
   const value = String(rawCode || "")
     .toUpperCase()
@@ -1243,8 +1260,8 @@ function sanitizePlayerName(rawName) {
 
 function sanitizeMapGridSize(rawValue) {
   const parsed = Number(rawValue);
-  if (parsed === 3 || parsed === 4 || parsed === 10) return parsed;
-  return 2;
+  if (!Number.isFinite(parsed)) return 2;
+  return clamp(Math.round(parsed), 2, 10);
 }
 
 function generateMap(mapGridSize) {
@@ -1346,6 +1363,74 @@ function createFreshPlan(player) {
 
 function lineOfSightEnabled(room) {
   return room?.settings?.lineOfSight !== false;
+}
+
+function isDeathmatchMode(room) {
+  return room?.mode === "br" || room?.mode === "ffa" || room?.mode === "team";
+}
+
+function isTeamMode(room) {
+  return room?.mode === "team";
+}
+
+function teamName(team) {
+  return team === "blue" ? "Blue" : "Red";
+}
+
+function teamColor(team) {
+  return team === "blue" ? "#3a86ff" : "#ff6f61";
+}
+
+function assignTeam(room, player) {
+  if (!isTeamMode(room)) {
+    player.team = null;
+    return null;
+  }
+
+  const counts = { red: 0, blue: 0 };
+  for (const other of room.players.values()) {
+    if (other.id === player.id) continue;
+    if (other.team === "red") counts.red += 1;
+    if (other.team === "blue") counts.blue += 1;
+  }
+
+  player.team = counts.red <= counts.blue ? "red" : "blue";
+  return player.team;
+}
+
+function ensurePlayerTeam(room, player) {
+  if (isTeamMode(room)) {
+    if (!player.team) {
+      assignTeam(room, player);
+    }
+  } else {
+    player.team = null;
+  }
+}
+
+function deathmatchScores(room) {
+  if (!room?.match) return {};
+  if (isTeamMode(room)) {
+    return room.match.teamKills || { red: 0, blue: 0 };
+  }
+  return room.match.kills || {};
+}
+
+function deathmatchPlayerCap(room) {
+  return isDeathmatchMode(room) ? CONFIG.brMaxPlayers : CONFIG.maxPlayers;
+}
+
+function desiredBrGridSize(room) {
+  const count = room?.match?.participantIds?.length || connectedPlayers(room).length || 1;
+  return clamp(Math.ceil(Math.sqrt(Math.max(count, 1))), 2, 10);
+}
+
+function nextBrGridSize(room) {
+  const desired = desiredBrGridSize(room);
+  const current = room?.match?.arenaGridSize || room?.settings?.mapGridSize || desired;
+  if (!room?.match) return desired;
+  if (current === desired) return desired;
+  return clamp(current + Math.sign(desired - current), 2, 10);
 }
 
 function resetPlayerForRound(player, spawnPoint) {
@@ -1519,6 +1604,7 @@ function addBrParticipant(room, player) {
   }
   room.match.kills[player.id] = 0;
   room.match.totalSurvivalMs[player.id] = 0;
+  ensurePlayerTeam(room, player);
   player.roundAlive = false;
   player.spectating = true;
   player.pendingBrSpawn = true;
@@ -1526,12 +1612,19 @@ function addBrParticipant(room, player) {
 
 function startBrMatch(room) {
   const participants = connectedPlayers(room);
+  if (isTeamMode(room)) {
+    for (const player of participants) {
+      ensurePlayerTeam(room, player);
+    }
+  }
   room.match = {
-    id: `match-br-${globalMatchSerial++}`,
+    id: `match-dm-${globalMatchSerial++}`,
     participantIds: participants.map((p) => p.id),
     roundWins: Object.fromEntries(participants.map((p) => [p.id, 0])),
     totalSurvivalMs: Object.fromEntries(participants.map((p) => [p.id, 0])),
     kills: Object.fromEntries(participants.map((p) => [p.id, 0])),
+    teamKills: isTeamMode(room) ? { red: 0, blue: 0 } : null,
+    arenaGridSize: desiredBrGridSize(room),
     currentRoundNumber: 0
   };
   room.lastRoundSummary = null;
@@ -1542,14 +1635,13 @@ function startBrMatch(room) {
 function startBrRound(room) {
   room.match.currentRoundNumber += 1;
   const fixedSize = room.settings.fixedMapGridSize || null;
-  let gridSize;
-  if (fixedSize) {
-    gridSize = fixedSize;
-  } else {
-    const count = room.match.participantIds.length;
-    gridSize = clamp(Math.ceil(Math.sqrt(Math.max(count, 1))), 2, 10);
-  }
+  const gridSize = room.mode === "br"
+    ? nextBrGridSize(room)
+    : (fixedSize || desiredBrGridSize(room));
   room.settings.mapGridSize = gridSize;
+  if (room.match) {
+    room.match.arenaGridSize = gridSize;
+  }
   const map = generateMap(gridSize);
   getNavGrid(map);
   const participantIds = room.match.participantIds;
@@ -1564,37 +1656,52 @@ function startBrRound(room) {
   for (const playerId of participantIds) {
     const player = room.players.get(playerId);
     if (!player) continue;
+    ensurePlayerTeam(room, player);
     resetPlayerForRound(player, pickBrSpawn(map, room, player.id));
   }
   startPlanning(room);
 }
 
 function finalizeBrMatch(room) {
-  const kills = room.match.kills || {};
-  let winnerId = null;
-  let top = -1;
-  for (const id of room.match.participantIds) {
-    const k = kills[id] || 0;
-    if (k > top) {
-      top = k;
-      winnerId = id;
+  if (isTeamMode(room)) {
+    const teamKills = room.match.teamKills || { red: 0, blue: 0 };
+    const redScore = teamKills.red || 0;
+    const blueScore = teamKills.blue || 0;
+    const winnerTeam = redScore === blueScore ? null : (redScore > blueScore ? "red" : "blue");
+    room.lastMatchSummary = {
+      winnerTeam,
+      scoreboard: [
+        { id: "red", name: "Red Team", kills: redScore },
+        { id: "blue", name: "Blue Team", kills: blueScore }
+      ].sort((a, b) => b.kills - a.kills)
+    };
+  } else {
+    const kills = room.match.kills || {};
+    let winnerId = null;
+    let top = -1;
+    for (const id of room.match.participantIds) {
+      const k = kills[id] || 0;
+      if (k > top) {
+        top = k;
+        winnerId = id;
+      }
     }
+    room.lastMatchSummary = {
+      winnerId,
+      scoreboard: room.match.participantIds
+        .map((id) => {
+          const p = room.players.get(id);
+          return {
+            id,
+            name: p ? p.name : "?",
+            wins: 0,
+            survivalMs: 0,
+            kills: kills[id] || 0
+          };
+        })
+        .sort((a, b) => b.kills - a.kills)
+    };
   }
-  room.lastMatchSummary = {
-    winnerId,
-    scoreboard: room.match.participantIds
-      .map((id) => {
-        const p = room.players.get(id);
-        return {
-          id,
-          name: p ? p.name : "?",
-          wins: 0,
-          survivalMs: 0,
-          kills: kills[id] || 0
-        };
-      })
-      .sort((a, b) => b.kills - a.kills)
-  };
   setPhase(room, "match_end", 5_000, "Match over");
 }
 
@@ -1698,7 +1805,7 @@ function startPlanning(room) {
     if (!player) {
       continue;
     }
-    if (room.mode === "br" && !player.roundAlive && room.round.map && !player.disconnected) {
+    if (isDeathmatchMode(room) && !player.roundAlive && room.round.map && !player.disconnected) {
       resetPlayerForRound(player, pickBrSpawn(room.round.map, room, player.id));
     }
     player.plan = createFreshPlan(player);
@@ -1843,6 +1950,7 @@ function simulateShooting(room, actionMap) {
       for (const target of players) {
         if (target.id === shooter.id && i === 0) continue;
         if (hitVictims.has(target.id)) continue;
+        if (isTeamMode(room) && shooter.team && target.team && shooter.team === target.team) continue;
         const t = sim[target.id];
         if (!t.alive) continue;
         if (t.deathAtMs !== null && t.deathAtMs <= segStartTimeMs) continue;
@@ -1935,17 +2043,19 @@ function simulateShooting(room, actionMap) {
       player.roundAlive = false;
       player.spectating = true;
       player.roundDeathAtMs = elapsedBeforeShots + s.deathAtMs;
-      if (killRecord) {
-        if (killRecord.shooterId !== player.id) {
-          kills.push({
-            shooterId: killRecord.shooterId,
-            victimId: player.id,
-            timeMs: Math.round(killRecord.timeMs),
-            bulletId: killRecord.bulletId
-          });
-          if (room.mode === "br" && room.match && room.match.kills[killRecord.shooterId] !== undefined) {
-            room.match.kills[killRecord.shooterId] += 1;
-          }
+      if (killRecord && killRecord.shooterId !== player.id) {
+        kills.push({
+          shooterId: killRecord.shooterId,
+          victimId: player.id,
+          timeMs: Math.round(killRecord.timeMs),
+          bulletId: killRecord.bulletId
+        });
+        if (room.match && room.match.kills[killRecord.shooterId] !== undefined) {
+          room.match.kills[killRecord.shooterId] += 1;
+        }
+        const killer = room.players.get(killRecord.shooterId);
+        if (isTeamMode(room) && room.match?.teamKills && killer?.team) {
+          room.match.teamKills[killer.team] = (room.match.teamKills[killer.team] || 0) + 1;
         }
       }
     }
@@ -2124,13 +2234,13 @@ function updateRoom(room) {
   }
 
   if (room.phase === "lobby_countdown") {
-    const minRequired = room.testMode ? 1 : CONFIG.minPlayers;
+    const minRequired = isDeathmatchMode(room) ? 1 : (room.testMode ? 1 : CONFIG.minPlayers);
     if (connectedCount < minRequired) {
       setPhase(room, "lobby", null, "Waiting for players");
       return;
     }
     if (room.phaseEndsAt && now >= room.phaseEndsAt) {
-      if (room.mode === "br") {
+      if (isDeathmatchMode(room)) {
         startBrMatch(room);
       } else {
         startMatch(room);
@@ -2162,22 +2272,25 @@ function updateRoom(room) {
   }
 
   if (room.phase === "shooting" && room.phaseEndsAt && now >= room.phaseEndsAt) {
-    const aliveCount = room.match.participantIds
-      .map((playerId) => room.players.get(playerId))
-      .filter((player) => player && player.roundAlive).length;
-    const soloTest = room.testMode && room.match.participantIds.length === 1;
-    if (room.mode === "br") {
+    if (isDeathmatchMode(room)) {
       const target = room.settings.killTarget || 5;
-      const top = Math.max(0, ...Object.values(room.match.kills || {}));
+      const scores = deathmatchScores(room);
+      const top = Math.max(0, ...Object.values(scores));
       if (top >= target) {
         finalizeBrMatch(room);
       } else {
         startPlanning(room);
       }
-    } else if (aliveCount <= 1 && !soloTest) {
-      finalizeRound(room);
     } else {
-      startPlanning(room);
+      const aliveCount = room.match.participantIds
+        .map((playerId) => room.players.get(playerId))
+        .filter((player) => player && player.roundAlive).length;
+      const soloTest = room.testMode && room.match.participantIds.length === 1;
+      if (aliveCount <= 1 && !soloTest) {
+        finalizeRound(room);
+      } else {
+        startPlanning(room);
+      }
     }
     return;
   }
@@ -2192,7 +2305,7 @@ function updateRoom(room) {
   }
 
   if (room.phase === "match_end" && room.phaseEndsAt && now >= room.phaseEndsAt) {
-    if (room.mode === "br") {
+    if (isDeathmatchMode(room)) {
       startBrMatch(room);
     } else {
       returnRoomToLobby(room);
@@ -2240,6 +2353,7 @@ function serializePlayerForViewer(room, viewer, target) {
     disconnected: target.disconnected,
     alive: inCurrentMatch ? !!target.roundAlive : false,
     spectating: inCurrentMatch ? !!target.spectating : false,
+    team: target.team || null,
     x: visibleToYou ? position.x : null,
     y: visibleToYou ? position.y : null,
     wins: room.match ? room.match.roundWins[target.id] || 0 : 0,
@@ -2276,8 +2390,8 @@ function buildState(player) {
       phaseDurationMs: room.phaseDurationMs || null,
       connectedCount: connectedPlayers(room).length,
       playerCount: players.length,
-      minPlayers: room.testMode ? 1 : CONFIG.minPlayers,
-      maxPlayers: room.mode === "br" ? CONFIG.brMaxPlayers : CONFIG.maxPlayers
+      minPlayers: isDeathmatchMode(room) ? 1 : (room.testMode ? 1 : CONFIG.minPlayers),
+      maxPlayers: deathmatchPlayerCap(room)
     },
     you: {
       id: player.id,
@@ -2288,6 +2402,7 @@ function buildState(player) {
       disconnected: player.disconnected,
       alive: !!player.roundAlive,
       spectating: !!player.spectating,
+      team: player.team || null,
       x: player.x,
       y: player.y,
       wins: room.match ? room.match.roundWins[player.id] || 0 : 0,
@@ -2308,10 +2423,11 @@ function buildState(player) {
           active: true,
           mode: room.mode,
           currentRound: room.match.currentRoundNumber,
-          totalRounds: room.mode === "br" ? null : (room.settings.totalRounds || CONFIG.totalRounds),
+          totalRounds: isDeathmatchMode(room) ? null : (room.settings.totalRounds || CONFIG.totalRounds),
           turnNumber: room.round ? room.round.turnNumber : 0,
           participantIds: room.match.participantIds,
           kills: room.match.kills || null,
+          teamKills: room.match.teamKills || null,
           map: room.round
             ? {
                 id: room.round.map.id,
@@ -2405,19 +2521,29 @@ function findAvailableBrRoom() {
 
 async function handleJoin(request, response) {
   const body = await readJsonBody(request);
-  const requestedMode = body.mode === "br" ? "br" : "turn";
+  const requestedMode = ["turn", "br", "ffa", "team"].includes(body.mode) ? body.mode : "turn";
   const requestedName = sanitizePlayerName(body.name);
   const requestedMapGridSize = sanitizeMapGridSize(body.mapGridSize);
   const isPractice = !!body.practice;
-  const wantsPrivateBr = requestedMode === "br" && !!body.private;
+  const wantsPrivateDeathmatch = requestedMode !== "turn" && body.private === true;
+  const createNewRoom = !!body.createNew;
   const requestedLineOfSight = body.lineOfSight === true;
 
   let room = null;
   let desiredCode = "";
-  if (requestedMode === "br" && !isPractice && !wantsPrivateBr) {
-    room = findAvailableBrRoom();
-    desiredCode = room ? room.code : "";
-  } else if (requestedMode === "turn") {
+  if (requestedMode === "br" && !isPractice && !wantsPrivateDeathmatch) {
+    desiredCode = sanitizeRoomCode(body.roomCode);
+    if (body.roomCode && desiredCode.length !== CONFIG.roomCodeLength) {
+      json(response, 400, { ok: false, error: "Room codes must be 4 characters." });
+      return;
+    }
+    if (!desiredCode && !createNewRoom) {
+      room = findAvailableBrRoom();
+      desiredCode = room ? room.code : "";
+    } else if (desiredCode) {
+      room = rooms.get(desiredCode) || null;
+    }
+  } else if (requestedMode === "turn" && !createNewRoom) {
     desiredCode = sanitizeRoomCode(body.roomCode);
     if (body.roomCode && desiredCode.length !== CONFIG.roomCodeLength) {
       json(response, 400, { ok: false, error: "Room codes must be 4 characters." });
@@ -2443,38 +2569,43 @@ async function handleJoin(request, response) {
     const totalRounds = [1, 3, 5, 7, 10].includes(rawRounds) ? rawRounds : CONFIG.totalRounds;
     const rawKillTarget = Number(body.killTarget);
     const killTargetOverride = [1, 3, 5, 7, 10, 15, 20].includes(rawKillTarget) ? rawKillTarget : null;
-    const fixedMapGridSize = requestedMode === "br" && !!body.private
-      ? requestedMapGridSize || CONFIG.defaultMapGridSize
+    const deathmatch = isDeathmatchMode(room);
+    const fixedMapGridSize = deathmatch
+      ? (room.mode === "br" ? null : (requestedMapGridSize || CONFIG.defaultMapGridSize))
       : isPractice
         ? 2
         : null;
     room.settings = {
-      mapGridSize:
-        requestedMode === "br"
-          ? (fixedMapGridSize || 2)
-          : requestedMapGridSize || CONFIG.defaultMapGridSize,
+      mapGridSize: deathmatch
+        ? (room.mode === "br" ? desiredBrGridSize(room) : (fixedMapGridSize || CONFIG.defaultMapGridSize))
+        : requestedMapGridSize || CONFIG.defaultMapGridSize,
       fixedMapGridSize,
       lineOfSight: requestedLineOfSight,
-      killTarget: requestedMode === "br" ? (killTargetOverride || CONFIG.brKillTarget) : 0,
-      totalRounds: requestedMode === "br" ? null : totalRounds
+      killTarget: deathmatch ? (killTargetOverride || CONFIG.brKillTarget) : 0,
+      totalRounds: deathmatch ? null : totalRounds
     };
-    if (isPractice || wantsPrivateBr) room.private = true;
+    if (room.mode === "br") {
+      room.private = !!body.private;
+    } else if (isPractice || wantsPrivateDeathmatch) {
+      room.private = true;
+    }
     rooms.set(code, room);
   }
 
-  const playerCap = room.mode === "br" ? CONFIG.brMaxPlayers : CONFIG.maxPlayers;
+  const playerCap = deathmatchPlayerCap(room);
   if (room.players.size >= playerCap) {
     json(response, 409, { ok: false, error: "Room is full." });
     return;
   }
 
   const serial = globalPlayerSerial++;
+  const defaultColor = generateColor(serial);
   const player = {
     id: `player-${serial}`,
     token: randomId(24),
     roomCode: room.code,
     name: requestedName || generateGuestName(room),
-    color: generateColor(serial),
+    color: sanitizeHatColor(body.hatColor, defaultColor),
     connected: true,
     disconnected: false,
     lastSeenAt: nowMs(),
@@ -2500,13 +2631,13 @@ async function handleJoin(request, response) {
     playerId: player.id
   });
 
-  if (room.mode === "br" && (!room.private || room.match)) {
+  if (isDeathmatchMode(room) && (!room.private || room.match)) {
     addBrParticipant(room, player);
   }
 
   const botCount = Number(body.bots) || 0;
   if (botCount > 0 && (isPractice || room.players.size === 1)) {
-    const slotsRemaining = Math.max(0, CONFIG.brMaxPlayers - room.players.size);
+    const slotsRemaining = Math.max(0, deathmatchPlayerCap(room) - room.players.size);
     for (let i = 0; i < Math.min(botCount, slotsRemaining); i += 1) {
       addBotToRoom(room);
     }
@@ -2588,8 +2719,8 @@ async function handleRespawn(request, response) {
     return;
   }
   const room = rooms.get(player.roomCode);
-  if (!room || room.mode !== "br") {
-    json(response, 409, { ok: false, error: "Respawn only allowed in battle royale." });
+  if (!room || !isDeathmatchMode(room)) {
+    json(response, 409, { ok: false, error: "Respawn only allowed in battle modes." });
     return;
   }
   player.lastSeenAt = nowMs();
@@ -2629,14 +2760,14 @@ async function handleLeave(request, response) {
 }
 
 function addBotToRoom(room) {
-  const cap = room.mode === "br" ? CONFIG.brMaxPlayers : CONFIG.maxPlayers;
+  const cap = deathmatchPlayerCap(room);
   if (room.players.size >= cap) return null;
   const serial = globalPlayerSerial++;
   const bot = {
     id: `bot-${serial}`,
     token: `bot-token-${serial}`,
     roomCode: room.code,
-    name: `Bot ${serial}`,
+    name: generateBotName(room, serial),
     color: generateColor(serial),
     connected: true,
     disconnected: false,
@@ -2658,7 +2789,7 @@ function addBotToRoom(room) {
     }
   };
   room.players.set(bot.id, bot);
-  if (room.mode === "br" && (!room.private || room.match)) {
+  if (isDeathmatchMode(room) && (!room.private || room.match)) {
     addBrParticipant(room, bot);
   }
   return bot;
@@ -2715,7 +2846,7 @@ async function handleStart(request, response) {
   }
 
   const testMode = !!body.testMode;
-  const minRequired = testMode ? 1 : CONFIG.minPlayers;
+  const minRequired = isDeathmatchMode(room) ? 1 : (testMode ? 1 : CONFIG.minPlayers);
   if (connectedPlayers(room).length < minRequired) {
     json(response, 409, { ok: false, error: "At least 2 players are required." });
     return;

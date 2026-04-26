@@ -97,6 +97,16 @@ body {
   accent-color: var(--accent);
 }
 
+.color-field input[type="color"] {
+  width: 100%;
+  height: 46px;
+  padding: 6px;
+  border-radius: 14px;
+  border: 1px solid rgba(27, 20, 13, 0.18);
+  background: rgba(255, 255, 255, 0.7);
+  cursor: pointer;
+}
+
 .field input {
   width: 100%;
   padding: 14px 16px;
@@ -332,9 +342,36 @@ button.primary {
 }
 
 #leaderboard li .name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+#leaderboard li .name-text {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+#leaderboard li .team-badge {
+  flex-shrink: 0;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #fff;
+}
+
+#leaderboard li .team-red {
+  background: #ff6f61;
+}
+
+#leaderboard li .team-blue {
+  background: #3a86ff;
 }
 
 #leaderboard li .score {

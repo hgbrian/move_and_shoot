@@ -5,6 +5,8 @@ const UI_ELEMENTS = {
   menu: "menu",
   hud: "hud",
   playerNameInput: "player-name-input",
+  hatColorInput: "hat-color-input",
+  modeInput: "mode-input",
   mapSizeInput: "map-size-input",
   totalRoundsInput: "total-rounds-input",
   botCountInput: "bot-count-input",
@@ -97,7 +99,9 @@ const state = {
     mode: "spectator"
   },
   seenKillNoticeKeys: new Set(),
-  killNoticeQueue: []
+  killNoticeQueue: [],
+  deathNotice: null,
+  deathNoticeKey: ""
 };
 
 const FIXED_VIEW_SHORT_SIDE = 900;
@@ -107,6 +111,14 @@ function computeCameraZoom() {
 }
 const CAMERA_FOLLOW_SMOOTHING = 0.2;
 const CAMERA_BULLET_SMOOTHING = 0.12;
+const SHOOTING_ZOOM_MULTIPLIER = 0.82;
+
+function targetCameraZoom() {
+  const base = computeCameraZoom();
+  return state.snapshot?.room?.phase === "shooting"
+    ? base * SHOOTING_ZOOM_MULTIPLIER
+    : base;
+}
 
 class SoundBoard {
   constructor() {
@@ -225,6 +237,18 @@ function ordinal(n) {
     case 3: return `${n}rd`;
     default: return `${n}th`;
   }
+}
+
+function isDeathmatchMode(mode) {
+  return mode === "br" || mode === "ffa" || mode === "team";
+}
+
+function isTeamMode(mode) {
+  return mode === "team";
+}
+
+function teamLabel(team) {
+  return team === "blue" ? "Blue" : "Red";
 }
 
 function lerp(a, b, t) {
@@ -677,12 +701,12 @@ function ensureCamera() {
 
   const map = state.snapshot.match.map;
   if (!state.camera.zoom) {
-    state.camera.zoom = computeCameraZoom();
+    state.camera.zoom = targetCameraZoom();
   }
+  state.camera.zoom = lerp(state.camera.zoom, targetCameraZoom(), 0.12);
   const localShotBullet = getLocalShotBullet();
   if (state.snapshot.you.alive || localShotBullet) {
     const target = localShotBullet ? getCameraTarget() : getCameraTarget();
-    state.camera.zoom = computeCameraZoom();
     state.camera.panX = 0;
     state.camera.panY = 0;
     const desiredX = clamp(target.x, 0, map.width);
@@ -701,7 +725,6 @@ function ensureCamera() {
       state.camera.y = lerp(state.camera.y, desiredY, CAMERA_FOLLOW_SMOOTHING);
     }
   } else {
-    state.camera.zoom = computeCameraZoom();
     const desiredX = clamp(state.camera.x || map.width / 2, 0, map.width);
     const desiredY = clamp(state.camera.y || map.height / 2, 0, map.height);
     state.camera.x = lerp(state.camera.x || desiredX, desiredX, CAMERA_FOLLOW_SMOOTHING);
@@ -747,29 +770,29 @@ function api(path, options = {}) {
 
 async function joinRoom(roomCode, options = {}) {
   const name = ui.playerNameInput.value.trim().slice(0, 20);
+  const selectedMode = options.mode || ui.modeInput.value || "team";
   const payload = roomCode ? { roomCode } : {};
   if (name) {
     payload.name = name;
   }
+  payload.hatColor = ui.hatColorInput.value;
   payload.mapGridSize = Number(ui.mapSizeInput.value) || 2;
-  payload.totalRounds = Number(ui.totalRoundsInput.value) || 3;
   if (!roomCode) {
     payload.lineOfSight = !!ui.lineOfSightInput.checked;
+    payload.mode = selectedMode;
+    payload.createNew = !!options.createNew;
+    payload.private = selectedMode !== "br";
   }
   const requestedBots = !roomCode
     ? clamp(Math.floor(Number(ui.botCountInput.value) || 0), 0, 49)
     : 0;
   const firstTo = Number(ui.totalRoundsInput.value) || 5;
   if (requestedBots > 0) {
-    payload.mode = "br";
-    payload.private = true;
     payload.bots = requestedBots;
     payload.killTarget = firstTo;
-  } else if (!roomCode && options.mode !== "br") {
-    payload.bots = 0;
   }
-  if (options.mode === "br") {
-    payload.mode = "br";
+  if (!roomCode) {
+    payload.killTarget = firstTo;
   }
   const result = await api("/api/join", { method: "POST", body: payload });
   state.token = result.token;
@@ -888,7 +911,9 @@ function handleSnapshot(snapshot) {
   const matchSummaryKey = sameSummaryKey(snapshot.summaries.match);
   if (snapshot.summaries.match && matchSummaryKey !== state.lastMatchSummaryKey) {
     state.lastMatchSummaryKey = matchSummaryKey;
-    if (snapshot.summaries.match.winnerId) {
+    if (snapshot.summaries.match.winnerTeam) {
+      pushMessage(`${teamLabel(snapshot.summaries.match.winnerTeam)} Team wins the battle.`);
+    } else if (snapshot.summaries.match.winnerId) {
       const winner = snapshot.summaries.match.scoreboard.find(
         (entry) => entry.id === snapshot.summaries.match.winnerId
       );
@@ -914,6 +939,7 @@ function handleSnapshot(snapshot) {
         sounds.hit();
         if (player.id === snapshot.you.id) {
           sounds.death();
+          triggerDeathNoticeFromSnapshot(snapshot, "state-change");
         }
       }
     });
@@ -947,10 +973,11 @@ function renderHud() {
   ui.timerLabel.textContent = state.snapshot.room.phase === "planning"
     ? formatSeconds(getPhaseTimeRemaining())
     : "—";
-  const isBr = state.snapshot.room.mode === "br";
-  ui.roundLabelTitle.textContent = isBr ? "Target" : "Round";
+  const isDeathmatch = isDeathmatchMode(state.snapshot.room.mode);
+  const isTeam = isTeamMode(state.snapshot.room.mode);
+  ui.roundLabelTitle.textContent = isDeathmatch ? "Target" : "Round";
   ui.roundLabel.textContent = state.snapshot.match.active
-    ? isBr
+    ? isDeathmatch
       ? `First to ${state.snapshot.room.settings.killTarget || 5}`
       : state.snapshot.match.totalRounds
         ? `${state.snapshot.match.currentRound} / ${state.snapshot.match.totalRounds}`
@@ -966,7 +993,12 @@ function renderHud() {
       : "Spectating";
   const leaderWins = Math.max(0, ...state.snapshot.players.map((player) => player.wins || 0));
   const showLobbyActions = state.snapshot.you.isHost && state.snapshot.room.phase === "lobby";
-  if (isBr) {
+  if (isTeam) {
+    const teamKills = state.snapshot.match?.teamKills || {};
+    const red = teamKills.red ?? 0;
+    const blue = teamKills.blue ?? 0;
+    ui.scoreLabel.textContent = `${red}R · ${blue}B`;
+  } else if (isDeathmatch) {
     const kills = state.snapshot.match?.kills || {};
     const myKills = kills[state.snapshot.you.id] ?? 0;
     const better = Object.values(kills).filter((k) => k > myKills).length;
@@ -978,14 +1010,16 @@ function renderHud() {
   const rosterNames = connectedPlayers.map((player) => player.name).join(", ") || "—";
   ui.playersLabel.textContent = `${connectedPlayers.length}/${state.snapshot.room.maxPlayers}: ${rosterNames}`;
   ui.topActionSlot.classList.toggle("hidden", !showLobbyActions);
-  ui.startTestButton.classList.toggle("hidden", isBr);
-  ui.addBotButton.classList.toggle("hidden", isBr);
+  ui.startTestButton.classList.add("hidden");
+  ui.addBotButton.classList.toggle("hidden", !isDeathmatch);
   if (showLobbyActions) {
     ui.startGameButton.disabled = state.snapshot.room.connectedCount < state.snapshot.room.minPlayers;
     ui.startGameButton.textContent =
       state.snapshot.room.connectedCount < state.snapshot.room.minPlayers
-        ? "Need 2 Players"
-        : "Start Game";
+        ? `Need ${state.snapshot.room.minPlayers} Player${state.snapshot.room.minPlayers === 1 ? "" : "s"}`
+        : isDeathmatch
+          ? "Start Battle"
+          : "Start Game";
   }
   renderLeaderboard();
 }
@@ -1653,28 +1687,37 @@ function checkDeathNotice() {
   if (!myEntry || myEntry.diedAtMs === null || myEntry.diedAtMs === undefined) return;
   const elapsed = currentPlaybackServerNow() - shooting.startedAt;
   if (elapsed < myEntry.diedAtMs) return;
-  const key = `${state.snapshot.match.currentRound}-${state.snapshot.match.turnNumber}`;
+  triggerDeathNoticeFromSnapshot(state.snapshot, "playback");
+}
+
+function triggerDeathNoticeFromSnapshot(snapshot, reason) {
+  const shooting = snapshot.match?.shooting;
+  const myEntry = shooting?.byPlayer?.[snapshot.you.id] || null;
+  const key = `${snapshot.match?.currentRound || 0}-${snapshot.match?.turnNumber || 0}-${reason}`;
   if (state.deathNoticeKey === key) return;
   state.deathNoticeKey = key;
-  const killer = myEntry.killerId
-    ? state.snapshot.players.find((p) => p.id === myEntry.killerId)
+  const killer = myEntry?.killerId
+    ? snapshot.players.find((p) => p.id === myEntry.killerId)
     : null;
-  let text;
+  let title;
+  let subtitle = "";
   if (killer && killer.id === state.snapshot.you.id) {
     const own = ["Bounced your own bullet into yourself", "Shot yourself, smooth", "Friendly fire — you're dead", "Your own ricochet got you"];
-    text = own[Math.floor(Math.random() * own.length)];
+    title = own[Math.floor(Math.random() * own.length)];
   } else {
     const flavor = DEATH_FLAVOR[Math.floor(Math.random() * DEATH_FLAVOR.length)];
-    text = killer ? `You ${flavor} ${killer.name}` : "You died";
+    title = killer ? `You ${flavor} ${killer.name}` : "You died";
+    subtitle = killer ? `Killed by ${killer.name}` : "Respawn next planning phase";
   }
-  state.deathNotice = { text, startMs: performance.now() };
+  state.deathNotice = { title, subtitle, startMs: performance.now() };
+  pushMessage(`${title}.`);
 }
 
 function drawDeathNotice() {
   const notice = state.deathNotice;
   if (!notice) return;
   const age = performance.now() - notice.startMs;
-  const lifeMs = 3500;
+  const lifeMs = 4200;
   if (age > lifeMs) { state.deathNotice = null; return; }
   const t = age / lifeMs;
   const fadeIn = Math.min(1, age / 200);
@@ -1684,13 +1727,29 @@ function drawDeathNotice() {
   const cx = window.innerWidth / 2;
   const cy = window.innerHeight / 2 + yOffset;
   ctx.save();
+  ctx.fillStyle = `rgba(120, 18, 12, ${alpha * 0.18})`;
+  ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
+  ctx.strokeStyle = `rgba(220, 60, 40, ${alpha * 0.55})`;
+  ctx.lineWidth = 14;
+  ctx.strokeRect(7, 7, window.innerWidth - 14, window.innerHeight - 14);
   ctx.textAlign = "center";
+  ctx.font = "900 16px Trebuchet MS";
+  ctx.fillStyle = `rgba(255, 221, 130, ${alpha})`;
+  ctx.fillText("YOU WERE KILLED", cx, cy - 42);
   ctx.font = "900 38px Trebuchet MS";
-  ctx.lineWidth = 6;
-  ctx.strokeStyle = `rgba(20, 12, 8, ${alpha * 0.7})`;
-  ctx.strokeText(notice.text, cx, cy);
+  ctx.lineWidth = 7;
+  ctx.strokeStyle = `rgba(20, 12, 8, ${alpha * 0.78})`;
+  ctx.strokeText(notice.title, cx, cy);
   ctx.fillStyle = `rgba(220, 60, 40, ${alpha})`;
-  ctx.fillText(notice.text, cx, cy);
+  ctx.fillText(notice.title, cx, cy);
+  if (notice.subtitle) {
+    ctx.font = "800 18px Trebuchet MS";
+    ctx.lineWidth = 5;
+    ctx.strokeStyle = `rgba(20, 12, 8, ${alpha * 0.62})`;
+    ctx.strokeText(notice.subtitle, cx, cy + 32);
+    ctx.fillStyle = `rgba(250, 246, 234, ${alpha})`;
+    ctx.fillText(notice.subtitle, cx, cy + 32);
+  }
   ctx.restore();
 }
 
@@ -2062,7 +2121,7 @@ bind(ui.createRoomButton, "click", async () => {
   sounds.unlock();
   ui.menuMessage.textContent = "Creating room...";
   try {
-    await joinRoom(ui.roomCodeInput.value);
+    await joinRoom("", { mode: ui.modeInput.value, createNew: true });
   } catch (error) {
     ui.menuMessage.textContent = error.message;
   }
@@ -2088,23 +2147,33 @@ function renderLeaderboard() {
   ui.leaderboard.classList.toggle("hidden", !open);
   ui.scoreTile.classList.toggle("open", open);
   if (!open || !state.snapshot) return;
-  const isBr = state.snapshot.room.mode === "br";
+  const isDeathmatch = isDeathmatchMode(state.snapshot.room.mode);
+  const isTeam = isTeamMode(state.snapshot.room.mode);
   const players = state.snapshot.players || [];
   const rows = players.map((p) => ({
     id: p.id,
     name: p.name,
-    score: isBr ? (state.snapshot.match.kills?.[p.id] ?? 0) : (p.wins || 0),
+    score: isDeathmatch ? (state.snapshot.match.kills?.[p.id] ?? 0) : (p.wins || 0),
     alive: p.alive,
-    connected: p.connected
+    connected: p.connected,
+    team: p.team || null
   }));
-  rows.sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
+  if (isTeam) {
+    const teamScore = (team) => (state.snapshot.match.teamKills?.[team] ?? 0);
+    rows.sort((a, b) => teamScore(b.team) - teamScore(a.team) || b.score - a.score || a.name.localeCompare(b.name));
+  } else {
+    rows.sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
+  }
   const myId = state.snapshot.you.id;
   ui.leaderboardList.innerHTML = rows
     .map((r) => {
       const cls = r.id === myId ? "you" : "";
-      const dim = !r.connected || (isBr && !r.alive) ? " style=\"opacity:0.5\"" : "";
-      const suffix = isBr ? "K" : "W";
-      return `<li class="${cls}"${dim}><span class="name">${escapeHtml(r.name)}</span><span class="score">${r.score}${suffix}</span></li>`;
+      const dim = !r.connected || (isDeathmatch && !r.alive) ? " style=\"opacity:0.5\"" : "";
+      const suffix = isDeathmatch ? "K" : "W";
+      const teamBadge = isTeam && r.team
+        ? `<span class="team-badge team-${r.team}">${escapeHtml(teamLabel(r.team))}</span>`
+        : "";
+      return `<li class="${cls}"${dim}><span class="name">${teamBadge}<span class="name-text">${escapeHtml(r.name)}</span></span><span class="score">${r.score}${suffix}</span></li>`;
     })
     .join("");
 }

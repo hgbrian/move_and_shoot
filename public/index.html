@@ -10,10 +10,22 @@
     <div id="app">
       <section id="menu" class="panel">
         <h1>Move and Shoot</h1>
-        <p class="subtitle">Barebones simultaneous-turn battle royale prototype.</p>
+        <p class="subtitle">Battle-mode setup with bots, teams, and room codes.</p>
         <label class="field">
           <span>Name <em>(optional)</em></span>
           <input id="player-name-input" maxlength="20" autocomplete="off" placeholder="Leave blank for default name">
+        </label>
+        <label class="field color-field">
+          <span>Hat color</span>
+          <input id="hat-color-input" type="color" value="#ff6f61">
+        </label>
+        <label class="field">
+          <span>Battle mode <em>(new room only)</em></span>
+          <select id="mode-input">
+            <option value="team" selected>Teams</option>
+            <option value="ffa">Free-for-all</option>
+            <option value="br">Battle Royale</option>
+          </select>
         </label>
         <label class="field">
           <span>Map size <em>(new room only)</em></span>
@@ -52,7 +64,7 @@
           <button id="create-room-button" class="primary">Create Room</button>
           <button id="join-room-button">Join Room</button>
         </div>
-        <p id="menu-message" class="hint">Blank room code creates a new room. Add bots to make a private deathmatch room your friends can join by code.</p>
+        <p id="menu-message" class="hint">Blank room code creates a new room with the selected battle mode. Add bots for chaos, or leave them at 0 for a pure human room.</p>
         <div class="rules">
           <p>Controls</p>
           <p>Press to set your move target, then drag to aim. Release to commit. Press again to refine.</p>
