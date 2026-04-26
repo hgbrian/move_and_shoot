@@ -192,6 +192,10 @@ button.primary {
   min-width: 0;
 }
 
+#turn-tile {
+  display: none;
+}
+
 .top-bar .value {
   white-space: nowrap;
   overflow: hidden;
@@ -276,8 +280,27 @@ button.primary {
 .phase-banner[data-phase="lobby"] { color: #665845; }
 
 @media (max-width: 640px) {
+  .top-bar {
+    left: 10px;
+    right: 10px;
+    top: 10px;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+    padding: 10px 12px;
+  }
+  .top-bar > div:nth-child(2),
+  .top-bar > div:nth-child(3),
+  .phone-hide {
+    display: none;
+  }
+  .label {
+    font-size: 0.62rem;
+  }
+  .value {
+    font-size: 0.82rem;
+  }
   .phase-banner {
-    top: 60px;
+    top: 70px;
   }
   .phase-banner-text {
     font-size: 0.85rem;

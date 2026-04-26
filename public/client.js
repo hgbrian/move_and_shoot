@@ -160,7 +160,7 @@ class SoundBoard {
   }
 
   shoot() {
-    this.tone(620, 0.08, "square", 0.045);
+    this.tone(260, 0.055, "sine", 0.018);
   }
 
   hit() {

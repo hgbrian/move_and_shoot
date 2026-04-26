@@ -25,8 +25,8 @@ const CONFIG = {
   roundEndPauseMs: 3_000,
   screenSize: 1200,
   defaultMapGridSize: 2,
-  defaultBuildingCount: 30,
-  maxBuildingCount: 400,
+  defaultBuildingCount: 60,
+  maxBuildingCount: 3200,
   playerRadius: 20,
   moveRange: 720,
   bulletSpeed: 1600,
@@ -955,29 +955,32 @@ function rayVsRectWithFace(origin, direction, minX, maxX, minY, maxY) {
   return { t, normal };
 }
 
-function simulateBouncingBullet(origin, direction, map, maxBounces) {
+function simulateBouncingBullet(origin, direction, map, maxDistance = Infinity, maxBounces = 1024) {
   const segments = [];
   let curOrigin = { x: origin.x, y: origin.y };
   let curDir = { x: direction.x, y: direction.y };
-  let prevSig = "";
-  let prevPrevSig = "";
-  for (let bounce = 0; bounce < maxBounces; bounce += 1) {
+  let remainingDistance = maxDistance;
+  let lastHitBuilding = null;
+  for (let bounce = 0; bounce < maxBounces && remainingDistance > 0.5; bounce += 1) {
     let nearestT = Infinity;
     let hitNormal = null;
+    let hitBuilding = null;
     for (const building of map.buildings) {
       const localOrigin = rotateIntoLocal(curOrigin, building);
       const localDir = rotateVectorIntoLocal(curDir, building);
       const hit = rayVsRectWithFace(
         localOrigin,
         localDir,
-        -building.halfWidth,
-        building.halfWidth,
-        -building.halfHeight,
-        building.halfHeight
+        -building.halfWidth - CONFIG.bulletRadius,
+        building.halfWidth + CONFIG.bulletRadius,
+        -building.halfHeight - CONFIG.bulletRadius,
+        building.halfHeight + CONFIG.bulletRadius
       );
       if (!hit || hit.t <= 0.01 || hit.t >= nearestT) continue;
+      if (building === lastHitBuilding && hit.t <= CONFIG.bulletRadius + 2) continue;
       nearestT = hit.t;
       hitNormal = rotateLocalVectorToWorld(hit.normal, building);
+      hitBuilding = building;
     }
 
     let worldT = Infinity;
@@ -999,6 +1002,18 @@ function simulateBouncingBullet(origin, direction, map, maxBounces) {
 
     if (!isFinite(nearestT) && !isFinite(worldT)) break;
 
+    const nextT = Math.min(nearestT, worldT);
+    if (nextT > remainingDistance) {
+      segments.push({
+        origin: { x: curOrigin.x, y: curOrigin.y },
+        direction: { x: curDir.x, y: curDir.y },
+        distance: remainingDistance,
+        terminal: true
+      });
+      remainingDistance = 0;
+      break;
+    }
+
     if (worldT <= nearestT) {
       segments.push({
         origin: { x: curOrigin.x, y: curOrigin.y },
@@ -1006,6 +1021,7 @@ function simulateBouncingBullet(origin, direction, map, maxBounces) {
         distance: worldT,
         terminal: true
       });
+      remainingDistance -= worldT;
       break;
     }
 
@@ -1015,6 +1031,7 @@ function simulateBouncingBullet(origin, direction, map, maxBounces) {
       distance: nearestT,
       terminal: false
     });
+    remainingDistance -= nearestT;
 
     const dotDN = curDir.x * hitNormal.x + curDir.y * hitNormal.y;
     const reflected = {
@@ -1025,14 +1042,20 @@ function simulateBouncingBullet(origin, direction, map, maxBounces) {
       x: curOrigin.x + curDir.x * nearestT,
       y: curOrigin.y + curDir.y * nearestT
     };
-    const eps = 0.6;
-    curOrigin = { x: hp.x + reflected.x * eps, y: hp.y + reflected.y * eps };
+    const eps = CONFIG.bulletRadius + 1;
+    if (remainingDistance <= eps) {
+      segments.push({
+        origin: { x: hp.x, y: hp.y },
+        direction: { x: reflected.x, y: reflected.y },
+        distance: remainingDistance,
+        terminal: true
+      });
+      remainingDistance = 0;
+      break;
+    }
+    curOrigin = { x: hp.x + hitNormal.x * eps, y: hp.y + hitNormal.y * eps };
     curDir = reflected;
-
-    const sig = `${Math.round(curOrigin.x / 4)}|${Math.round(curOrigin.y / 4)}|${Math.round(curDir.x * 50)}|${Math.round(curDir.y * 50)}`;
-    if (sig === prevSig && sig === prevPrevSig) break;
-    prevPrevSig = prevSig;
-    prevSig = sig;
+    lastHitBuilding = hitBuilding;
   }
   return segments;
 }
@@ -1282,10 +1305,7 @@ function sanitizeDynamicMapGridSize(rawValue) {
 
 function generateMap(mapGridSize) {
   const gridSize = sanitizeDynamicMapGridSize(mapGridSize);
-  const buildingTarget = Math.min(
-    CONFIG.maxBuildingCount,
-    Math.round(CONFIG.defaultBuildingCount * ((gridSize * gridSize) / 4))
-  );
+  const buildingTarget = targetBuildingCountForGridSize(gridSize);
   const map = {
     id: `map-${globalMapSerial++}`,
     width: CONFIG.screenSize * gridSize,
@@ -1297,11 +1317,19 @@ function generateMap(mapGridSize) {
   return map;
 }
 
+function targetBuildingCountForGridSize(gridSize) {
+  return Math.min(
+    CONFIG.maxBuildingCount,
+    Math.round(CONFIG.defaultBuildingCount * ((gridSize * gridSize) / 4))
+  );
+}
+
 function addBuildingsToMap(map, targetCount, options = {}) {
   const corridorPadding = 28;
   const avoidPlayers = options.avoidPlayers || [];
   const inSpawnArea = options.inSpawnArea || (() => true);
-  for (let attempt = 0; attempt < 8000 && map.buildings.length < targetCount; attempt += 1) {
+  const maxAttempts = Math.max(8000, targetCount * 35);
+  for (let attempt = 0; attempt < maxAttempts && map.buildings.length < targetCount; attempt += 1) {
     const angleDeg =
       CONFIG.buildingAngles[Math.floor(Math.random() * CONFIG.buildingAngles.length)];
     const width = 120 + Math.random() * 260;
@@ -1729,10 +1757,7 @@ function resizeBrArena(room, nextGridSize) {
       building.y <= map.height
     ));
   } else if (map.width > oldWidth || map.height > oldHeight) {
-    const targetCount = Math.min(
-      CONFIG.maxBuildingCount,
-      Math.round(CONFIG.defaultBuildingCount * ((nextGridSize * nextGridSize) / 4))
-    );
+    const targetCount = targetBuildingCountForGridSize(nextGridSize);
     const alivePlayers = room.match.participantIds
       .map((id) => room.players.get(id))
       .filter((player) => player && player.roundAlive && !player.disconnected);
@@ -2003,6 +2028,7 @@ function simulateShooting(room, actionMap) {
   const map = room.round.map;
   const radius = CONFIG.playerRadius;
   const bulletSpeedPxMs = CONFIG.bulletSpeed / 1000;
+  const selfMuzzleGraceDistance = CONFIG.playerRadius + CONFIG.bulletRadius + 8;
   const players = room.match.participantIds
     .map((playerId) => room.players.get(playerId))
     .filter(Boolean);
@@ -2030,17 +2056,8 @@ function simulateShooting(room, actionMap) {
 
     const origin = { x: s.pos.x, y: s.pos.y };
     const direction = normalizeVector(s.aimDir, { x: 0, y: -1 });
-    const allSegments = simulateBouncingBullet(origin, direction, map, 30);
-    if (!allSegments.length) continue;
-
     const maxFlightDist = bulletSpeedPxMs * CONFIG.bulletMaxFlightMs;
-    const rawSegments = [];
-    let cappedDist = 0;
-    for (const seg of allSegments) {
-      rawSegments.push(seg);
-      cappedDist += seg.distance;
-      if (cappedDist >= maxFlightDist) break;
-    }
+    const rawSegments = simulateBouncingBullet(origin, direction, map, maxFlightDist);
     if (!rawSegments.length) continue;
 
     const segments = [];
@@ -2055,19 +2072,20 @@ function simulateShooting(room, actionMap) {
 
       const segmentHits = [];
       for (const target of players) {
-        if (target.id === shooter.id && i === 0) continue;
         if (hitVictims.has(target.id)) continue;
         if (isTeamMode(room) && shooter.team && target.team && shooter.team === target.team) continue;
         const t = sim[target.id];
         if (!t.alive) continue;
         if (t.deathAtMs !== null && t.deathAtMs <= segStartTimeMs) continue;
-        const samples = 40;
+        const samples = Math.max(40, Math.ceil(seg.distance / Math.max(CONFIG.bulletRadius * 2, 8)));
         const segDuration = segEndTimeMs - segStartTimeMs;
         let targetHitTimeMs = null;
         for (let k = 1; k <= samples; k += 1) {
           const dtIn = (k / samples) * segDuration;
           const dtAbs = segStartTimeMs + dtIn;
           const distIn = dtIn * bulletSpeedPxMs;
+          const totalDist = cumDistBeforeSeg + distIn;
+          if (target.id === shooter.id && totalDist <= selfMuzzleGraceDistance) continue;
           const bx = seg.origin.x + seg.direction.x * distIn;
           const by = seg.origin.y + seg.direction.y * distIn;
           if (t.deathAtMs !== null && dtAbs >= t.deathAtMs) break;
