@@ -20,7 +20,7 @@ const CONFIG = {
   brAreaMultiplier: 1,
   brKillTarget: 10,
   coinRoundMs: 180_000,
-  coinCount: 90,
+  coinCount: 30,
   coinRadius: 10,
   coinDropRadius: 170,
   bulletRadius: 8,
@@ -1532,8 +1532,8 @@ function deathmatchPlayerCap(room) {
 }
 
 function displayedPlayerCap(room) {
-  if (room?.private && room.match && !["lobby", "lobby_countdown", "match_end"].includes(room.phase)) {
-    return room.match.participantIds.length;
+  if (room?.private && room.phase !== "lobby" && room.phase !== "match_end") {
+    return room.match ? room.match.participantIds.length : connectedPlayers(room).length;
   }
   return deathmatchPlayerCap(room);
 }
@@ -1656,7 +1656,7 @@ function recomputeTeamCoins(room) {
   room.match.teamCoins = teamCoins;
 }
 
-function collectCoins(room) {
+function collectCoins(room, movement = null) {
   if (!isCoinMode(room) || !room.round?.coins?.length || !room.match?.coinScores) return;
   const remaining = [];
   for (const coin of room.round.coins) {
@@ -1664,7 +1664,12 @@ function collectCoins(room) {
     for (const playerId of room.match.participantIds) {
       const player = room.players.get(playerId);
       if (!player || !player.roundAlive || player.disconnected) continue;
-      if (Math.hypot(player.x - coin.x, player.y - coin.y) <= CONFIG.playerRadius + CONFIG.coinRadius) {
+      const movementSamples = movement?.byPlayer?.[playerId]?.samples || null;
+      const samples = movementSamples?.length ? movementSamples : [player];
+      const touched = samples.some((sample) => (
+        Math.hypot(sample.x - coin.x, sample.y - coin.y) <= CONFIG.playerRadius + CONFIG.coinRadius
+      ));
+      if (touched) {
         collector = player;
         break;
       }
@@ -2449,7 +2454,7 @@ function beginMovement(room) {
 }
 
 function beginShooting(room) {
-  collectCoins(room);
+  collectCoins(room, room.round.currentTurn.movement);
   const actionMap = room.round.currentTurn.movement?.actionMap || buildActionMap(room);
   const result = simulateShooting(room, actionMap);
   room.round.currentTurn.shooting = {
