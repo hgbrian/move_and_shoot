@@ -1428,7 +1428,9 @@ function drawPlayers() {
   visiblePlayers().forEach((player) => {
     drawPlayer(player);
   });
-  visiblePlayers().forEach((player) => {
+  const shootingEntries = state.snapshot?.match?.shooting?.byPlayer || {};
+  Object.keys(shootingEntries).forEach((playerId) => {
+    const player = byId(playerId) || { id: playerId };
     drawDeathBurst(player);
   });
 }
