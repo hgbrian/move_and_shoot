@@ -1046,7 +1046,12 @@ function renderHud() {
   }
   const connectedPlayers = state.snapshot.players.filter((player) => player.connected);
   const rosterNames = connectedPlayers.map((player) => player.name).join(", ") || "—";
-  const maxPlayers = state.snapshot.room.maxPlayers === null ? "∞" : state.snapshot.room.maxPlayers;
+  const lockedParticipantCount = state.snapshot.room.mode !== "br" &&
+    !["lobby", "match_end"].includes(state.snapshot.room.phase) &&
+    state.snapshot.match?.participantIds?.length
+    ? state.snapshot.match.participantIds.length
+    : null;
+  const maxPlayers = lockedParticipantCount || (state.snapshot.room.maxPlayers === null ? "∞" : state.snapshot.room.maxPlayers);
   ui.playersLabel.textContent = `${connectedPlayers.length}/${maxPlayers}: ${rosterNames}`;
   ui.topActionSlot.classList.toggle("hidden", !showLobbyActions);
   ui.startTestButton.classList.add("hidden");

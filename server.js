@@ -2444,6 +2444,7 @@ function buildActionMap(room) {
 function beginMovement(room) {
   const actionMap = buildActionMap(room);
   const result = simulateMovement(room, actionMap);
+  collectCoins(room, result);
   room.round.currentTurn.movement = {
     startedAt: nowMs(),
     durationMs: result.durationMs,
@@ -2454,7 +2455,6 @@ function beginMovement(room) {
 }
 
 function beginShooting(room) {
-  collectCoins(room, room.round.currentTurn.movement);
   const actionMap = room.round.currentTurn.movement?.actionMap || buildActionMap(room);
   const result = simulateShooting(room, actionMap);
   room.round.currentTurn.shooting = {
